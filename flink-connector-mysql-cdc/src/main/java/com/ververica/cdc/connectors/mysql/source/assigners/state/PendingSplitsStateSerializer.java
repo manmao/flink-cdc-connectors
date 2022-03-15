@@ -22,6 +22,7 @@ import org.apache.flink.core.io.SimpleVersionedSerializer;
 import org.apache.flink.core.memory.DataInputDeserializer;
 import org.apache.flink.core.memory.DataOutputSerializer;
 
+import com.ververica.cdc.connectors.mysql.source.assigners.AssignerStatus;
 import com.ververica.cdc.connectors.mysql.source.offset.BinlogOffset;
 import com.ververica.cdc.connectors.mysql.source.split.MySqlSnapshotSplit;
 import com.ververica.cdc.connectors.mysql.source.split.MySqlSplit;
@@ -43,7 +44,7 @@ import static com.ververica.cdc.connectors.mysql.source.utils.SerializerUtils.wr
  */
 public class PendingSplitsStateSerializer implements SimpleVersionedSerializer<PendingSplitsState> {
 
-    private static final int VERSION = 1;
+    private static final int VERSION = 3;
     private static final ThreadLocal<DataOutputSerializer> SERIALIZER_CACHE =
             ThreadLocal.withInitial(() -> new DataOutputSerializer(64));
 
@@ -96,22 +97,49 @@ public class PendingSplitsStateSerializer implements SimpleVersionedSerializer<P
 
     @Override
     public PendingSplitsState deserialize(int version, byte[] serialized) throws IOException {
-        if (version == VERSION) {
-            final DataInputDeserializer in = new DataInputDeserializer(serialized);
-            final int splitVersion = in.readInt();
-            final int stateFlag = in.readInt();
-            if (stateFlag == SNAPSHOT_PENDING_SPLITS_STATE_FLAG) {
-                return deserializeSnapshotPendingSplitsState(splitVersion, in);
-            } else if (stateFlag == BINLOG_PENDING_SPLITS_STATE_FLAG) {
-                return deserializeBinlogPendingSplitsState(in);
-            } else if (stateFlag == HYBRID_PENDING_SPLITS_STATE_FLAG) {
-                return deserializeHybridPendingSplitsState(splitVersion, in);
-            } else {
-                throw new IOException(
-                        "Unsupported to deserialize PendingSplitsState flag: " + stateFlag);
-            }
+        switch (version) {
+            case 1:
+            case 2:
+                return deserializeLegacyPendingSplitsState(serialized);
+            case 3:
+            case 4:
+                return deserializePendingSplitsState(serialized);
+            default:
+                throw new IOException("Unknown version: " + version);
         }
-        throw new IOException("Unknown version: " + version);
+    }
+
+    public PendingSplitsState deserializeLegacyPendingSplitsState(byte[] serialized)
+            throws IOException {
+        final DataInputDeserializer in = new DataInputDeserializer(serialized);
+        final int splitVersion = in.readInt();
+        final int stateFlag = in.readInt();
+        if (stateFlag == SNAPSHOT_PENDING_SPLITS_STATE_FLAG) {
+            return deserializeLegacySnapshotPendingSplitsState(splitVersion, in);
+        } else if (stateFlag == HYBRID_PENDING_SPLITS_STATE_FLAG) {
+            return deserializeLegacyHybridPendingSplitsState(splitVersion, in);
+        } else if (stateFlag == BINLOG_PENDING_SPLITS_STATE_FLAG) {
+            return deserializeBinlogPendingSplitsState(in);
+        } else {
+            throw new IOException(
+                    "Unsupported to deserialize PendingSplitsState flag: " + stateFlag);
+        }
+    }
+
+    public PendingSplitsState deserializePendingSplitsState(byte[] serialized) throws IOException {
+        final DataInputDeserializer in = new DataInputDeserializer(serialized);
+        final int splitVersion = in.readInt();
+        final int stateFlag = in.readInt();
+        if (stateFlag == SNAPSHOT_PENDING_SPLITS_STATE_FLAG) {
+            return deserializeSnapshotPendingSplitsState(splitVersion, in);
+        } else if (stateFlag == HYBRID_PENDING_SPLITS_STATE_FLAG) {
+            return deserializeHybridPendingSplitsState(splitVersion, in);
+        } else if (stateFlag == BINLOG_PENDING_SPLITS_STATE_FLAG) {
+            return deserializeBinlogPendingSplitsState(in);
+        } else {
+            throw new IOException(
+                    "Unsupported to deserialize PendingSplitsState flag: " + stateFlag);
+        }
     }
 
     // ------------------------------------------------------------------------------------------
@@ -124,7 +152,9 @@ public class PendingSplitsStateSerializer implements SimpleVersionedSerializer<P
         writeMySqlSplits(state.getRemainingSplits(), out);
         writeAssignedSnapshotSplits(state.getAssignedSplits(), out);
         writeFinishedOffsets(state.getSplitFinishedOffsets(), out);
-        out.writeBoolean(state.isAssignerFinished());
+        out.writeInt(state.getSnapshotAssignerStatus().getStatusCode());
+        writeTableIds(state.getRemainingTables(), out);
+        out.writeBoolean(state.isTableIdCaseSensitive());
     }
 
     private void serializeHybridPendingSplitsState(
@@ -142,20 +172,69 @@ public class PendingSplitsStateSerializer implements SimpleVersionedSerializer<P
     // Deserialize
     // ------------------------------------------------------------------------------------------
 
+    private SnapshotPendingSplitsState deserializeLegacySnapshotPendingSplitsState(
+            int splitVersion, DataInputDeserializer in) throws IOException {
+        List<TableId> alreadyProcessedTables = readTableIds(in);
+        List<MySqlSnapshotSplit> remainingSplits = readMySqlSnapshotSplits(splitVersion, in);
+        Map<String, MySqlSnapshotSplit> assignedSnapshotSplits =
+                readAssignedSnapshotSplits(splitVersion, in);
+        Map<String, BinlogOffset> finishedOffsets = readFinishedOffsets(splitVersion, in);
+        AssignerStatus assignerStatus;
+        boolean isAssignerFinished = in.readBoolean();
+        if (isAssignerFinished) {
+            assignerStatus = AssignerStatus.INITIAL_ASSIGNING_FINISHED;
+        } else {
+            assignerStatus = AssignerStatus.INITIAL_ASSIGNING;
+        }
+
+        return new SnapshotPendingSplitsState(
+                alreadyProcessedTables,
+                remainingSplits,
+                assignedSnapshotSplits,
+                finishedOffsets,
+                assignerStatus,
+                new ArrayList<>(),
+                false,
+                false);
+    }
+
+    private HybridPendingSplitsState deserializeLegacyHybridPendingSplitsState(
+            int splitVersion, DataInputDeserializer in) throws IOException {
+        SnapshotPendingSplitsState snapshotPendingSplitsState =
+                deserializeLegacySnapshotPendingSplitsState(splitVersion, in);
+        boolean isBinlogSplitAssigned = in.readBoolean();
+        return new HybridPendingSplitsState(snapshotPendingSplitsState, isBinlogSplitAssigned);
+    }
+
     private SnapshotPendingSplitsState deserializeSnapshotPendingSplitsState(
             int splitVersion, DataInputDeserializer in) throws IOException {
         List<TableId> alreadyProcessedTables = readTableIds(in);
         List<MySqlSnapshotSplit> remainingSplits = readMySqlSnapshotSplits(splitVersion, in);
         Map<String, MySqlSnapshotSplit> assignedSnapshotSplits =
                 readAssignedSnapshotSplits(splitVersion, in);
-        Map<String, BinlogOffset> finishedOffsets = readFinishedOffsets(in);
-        boolean isAssignerFinished = in.readBoolean();
+        Map<String, BinlogOffset> finishedOffsets = readFinishedOffsets(splitVersion, in);
+        AssignerStatus assignerStatus;
+        if (splitVersion < 4) {
+            boolean isAssignerFinished = in.readBoolean();
+            if (isAssignerFinished) {
+                assignerStatus = AssignerStatus.INITIAL_ASSIGNING_FINISHED;
+            } else {
+                assignerStatus = AssignerStatus.INITIAL_ASSIGNING;
+            }
+        } else {
+            assignerStatus = AssignerStatus.fromStatusCode(in.readInt());
+        }
+        List<TableId> remainingTableIds = readTableIds(in);
+        boolean isTableIdCaseSensitive = in.readBoolean();
         return new SnapshotPendingSplitsState(
                 alreadyProcessedTables,
                 remainingSplits,
                 assignedSnapshotSplits,
                 finishedOffsets,
-                isAssignerFinished);
+                assignerStatus,
+                remainingTableIds,
+                isTableIdCaseSensitive,
+                true);
     }
 
     private HybridPendingSplitsState deserializeHybridPendingSplitsState(
@@ -185,13 +264,13 @@ public class PendingSplitsStateSerializer implements SimpleVersionedSerializer<P
         }
     }
 
-    private Map<String, BinlogOffset> readFinishedOffsets(DataInputDeserializer in)
-            throws IOException {
+    private Map<String, BinlogOffset> readFinishedOffsets(
+            int offsetVersion, DataInputDeserializer in) throws IOException {
         Map<String, BinlogOffset> splitsInfo = new HashMap<>();
         final int size = in.readInt();
         for (int i = 0; i < size; i++) {
             String splitId = in.readUTF();
-            BinlogOffset binlogOffset = readBinlogPosition(in);
+            BinlogOffset binlogOffset = readBinlogPosition(offsetVersion, in);
             splitsInfo.put(splitId, binlogOffset);
         }
         return splitsInfo;

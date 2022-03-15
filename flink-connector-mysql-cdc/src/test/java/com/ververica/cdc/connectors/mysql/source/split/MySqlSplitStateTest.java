@@ -20,7 +20,6 @@ package com.ververica.cdc.connectors.mysql.source.split;
 
 import org.apache.flink.table.types.logical.BigIntType;
 import org.apache.flink.table.types.logical.RowType;
-import org.apache.flink.table.types.logical.VarCharType;
 
 import com.ververica.cdc.connectors.mysql.source.offset.BinlogOffset;
 import io.debezium.relational.TableId;
@@ -137,10 +136,10 @@ public class MySqlSplitStateTest {
 
         return new MySqlBinlogSplit(
                 "binlog-split",
-                new RowType(Arrays.asList(new RowType.RowField("card_no", new VarCharType()))),
                 startingOffset,
                 BinlogOffset.NO_STOPPING_OFFSET,
                 finishedSplitsInfo,
-                tableSchemas);
+                tableSchemas,
+                finishedSplitsInfo.size());
     }
 }

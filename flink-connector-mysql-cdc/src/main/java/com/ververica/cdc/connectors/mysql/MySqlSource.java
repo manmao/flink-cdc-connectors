@@ -28,19 +28,35 @@ import java.util.HashMap;
 import java.util.Map;
 import java.util.Properties;
 
-import static com.ververica.cdc.connectors.mysql.source.MySqlSourceOptions.DATABASE_SERVER_NAME;
 import static com.ververica.cdc.debezium.DebeziumSourceFunction.LEGACY_IMPLEMENTATION_KEY;
 import static com.ververica.cdc.debezium.DebeziumSourceFunction.LEGACY_IMPLEMENTATION_VALUE;
 import static org.apache.flink.util.Preconditions.checkNotNull;
 
-/** A builder to build a SourceFunction which can read snapshot and continue to consume binlog. */
+/**
+ * A builder to build a SourceFunction which can read snapshot and continue to consume binlog.
+ *
+ * @deprecated please use {@link com.ververica.cdc.connectors.mysql.source.MySqlSource} instead
+ *     which supports more rich features, e.g. parallel reading from historical data. The {@link
+ *     MySqlSource} will be dropped in the future version.
+ */
+@Deprecated
 public class MySqlSource {
+
+    private static final String DATABASE_SERVER_NAME = "mysql_binlog_source";
 
     public static <T> Builder<T> builder() {
         return new Builder<>();
     }
 
-    /** Builder class of {@link MySqlSource}. */
+    /**
+     * Builder class of {@link MySqlSource}.
+     *
+     * @deprecated please use {@link
+     *     com.ververica.cdc.connectors.mysql.source.MySqlSource#builder()} instead which supports
+     *     more rich features, e.g. parallel reading from historical data. The {@link
+     *     MySqlSource.Builder} will be dropped in the future version.
+     */
+    @Deprecated
     public static class Builder<T> {
 
         private int port = 3306; // default 3306 port
@@ -102,7 +118,7 @@ public class MySqlSource {
         /**
          * The session time zone in database server, e.g. "America/Los_Angeles". It controls how the
          * TIMESTAMP type in MYSQL converted to STRING. See more
-         * https://debezium.io/documentation/reference/1.2/connectors/mysql.html#_temporal_values
+         * https://debezium.io/documentation/reference/1.5/connectors/mysql.html#mysql-temporal-types
          */
         public Builder<T> serverTimeZone(String timeZone) {
             this.serverTimeZone = timeZone;
@@ -157,6 +173,10 @@ public class MySqlSource {
             props.setProperty("database.password", checkNotNull(password));
             props.setProperty("database.port", String.valueOf(port));
             props.setProperty("database.history.skip.unparseable.ddl", String.valueOf(true));
+            // debezium use "long" mode to handle unsigned bigint by default,
+            // but it'll cause lose of precise when the value is larger than 2^63,
+            // so use "precise" mode to avoid it.
+            props.put("bigint.unsigned.handling.mode", "precise");
 
             if (serverId != null) {
                 props.setProperty("database.server.id", String.valueOf(serverId));
@@ -215,7 +235,7 @@ public class MySqlSource {
             }
 
             if (dbzProperties != null) {
-                dbzProperties.forEach(props::put);
+                props.putAll(dbzProperties);
                 // Add default configurations for compatibility when set the legacy mysql connector
                 // implementation
                 if (LEGACY_IMPLEMENTATION_VALUE.equals(

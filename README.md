@@ -3,7 +3,7 @@
 Flink CDC Connectors is a set of source connectors for Apache Flink, ingesting changes from different databases using change data capture (CDC).
 The Flink CDC Connectors integrates Debezium as the engine to capture data changes. So it can fully leverage the ability of Debezium. See more about what is [Debezium](https://github.com/debezium/debezium).
 
-This README is meant as a brief walkthrough on the core features with Flink CDC Connectors. For a fully detailed documentation, please see [Documentation](https://github.com/ververica/flink-cdc-connectors/wiki).
+This README is meant as a brief walkthrough on the core features with Flink CDC Connectors. For a fully detailed documentation, please see [Documentation](https://ververica.github.io/flink-cdc-connectors/master/).
 
 ## Supported (Tested) Connectors
 
@@ -11,10 +11,12 @@ This README is meant as a brief walkthrough on the core features with Flink CDC 
 | --- | --- |
 | MySQL | Database: 5.7, 8.0.x <br/>JDBC Driver: 8.0.16 |
 | PostgreSQL | Database: 9.6, 10, 11, 12 <br/>JDBC Driver: 42.2.12|
-
+| MongoDB | Database: 3.6, 4.x, 5.0 <br/>MongoDB Driver: 4.3.1|
+| Oracle | Database: 11, 12, 19 <br/>Oracle Driver: 19.3.0.0|
+| Sqlserver | Database: 2017, 2019 <br/>JDBC Driver: 7.2.2.jre8|
 ## Features
 
-1. Supports reading database snapshot and continues to read binlogs with **exactly-once processing** even failures happen.
+1. Supports reading database snapshot and continues to read transaction logs with **exactly-once processing** even failures happen.
 2. CDC connectors for DataStream API, users can consume changes on multiple databases and tables in a single job without Debezium and Kafka deployed.
 3. CDC connectors for Table/SQL API, users can use SQL DDL to create a CDC source to monitor changes on a single table.
 
@@ -59,34 +61,41 @@ Include following Maven dependency (available through Maven Central):
   <groupId>com.ververica</groupId>
   <!-- add the dependency matching your database -->
   <artifactId>flink-connector-mysql-cdc</artifactId>
-  <version>2.0.0</version>
+  <!-- the dependency is available only for stable releases. -->
+  <version>2.2-SNAPSHOT</version>
 </dependency>
 ```
 
 ```java
+import org.apache.flink.api.common.eventtime.WatermarkStrategy;
 import org.apache.flink.streaming.api.environment.StreamExecutionEnvironment;
-import org.apache.flink.streaming.api.functions.source.SourceFunction;
-import com.ververica.cdc.debezium.StringDebeziumDeserializationSchema;
-import com.ververica.cdc.connectors.mysql.MySqlSource;
+import com.ververica.cdc.debezium.JsonDebeziumDeserializationSchema;
+import com.ververica.cdc.connectors.mysql.source.MySqlSource;
 
-public class MySqlBinlogSourceExample {
+public class MySqlSourceExample {
   public static void main(String[] args) throws Exception {
-    SourceFunction<String> sourceFunction = MySqlSource.<String>builder()
-      .hostname("localhost")
-      .port(3306)
-      .databaseList("inventory") // monitor all tables under inventory database
-      .username("flinkuser")
-      .password("flinkpw")
-      .deserializer(new StringDebeziumDeserializationSchema()) // converts SourceRecord to String
-      .build();
+    MySqlSource<String> mySqlSource = MySqlSource.<String>builder()
+            .hostname("yourHostname")
+            .port(yourPort)
+            .databaseList("yourDatabaseName") // set captured database
+            .tableList("yourDatabaseName.yourTableName") // set captured table
+            .username("yourUsername")
+            .password("yourPassword")
+            .deserializer(new JsonDebeziumDeserializationSchema()) // converts SourceRecord to JSON String
+            .build();
 
     StreamExecutionEnvironment env = StreamExecutionEnvironment.getExecutionEnvironment();
 
+    // enable checkpoint
+    env.enableCheckpointing(3000);
+
     env
-      .addSource(sourceFunction)
+      .fromSource(mySqlSource, WatermarkStrategy.noWatermarks(), "MySQL Source")
+      // set 4 parallel source tasks
+      .setParallelism(4)
       .print().setParallelism(1); // use parallelism 1 for sink to keep message ordering
 
-    env.execute();
+    env.execute("Print MySQL Snapshot + Binlog");
   }
 }
 ```

@@ -13,13 +13,16 @@ In order to setup the Postgres CDC connector, the following table provides depen
 <dependency>
   <groupId>com.ververica</groupId>
   <artifactId>flink-connector-postgres-cdc</artifactId>
-  <version>2.0.0</version>
+  <!-- the dependency is available only for stable releases. -->
+  <version>2.2-SNAPSHOT</version>
 </dependency>
 ```
 
 ### SQL Client JAR
 
-Download [flink-sql-connector-postgres-cdc-2.0.0.jar](https://repo1.maven.org/maven2/com/ververica/flink-sql-connector-postgres-cdc/2.0.0/flink-sql-connector-postgres-cdc-2.0.0.jar) and put it under `<FLINK_HOME>/lib/`.
+```Download link is available only for stable releases.```
+
+Download [flink-sql-connector-postgres-cdc-2.2-SNAPSHOT.jar](https://repo1.maven.org/maven2/com/ververica/flink-sql-connector-postgres-cdc/2.2-SNAPSHOT/flink-sql-connector-postgres-cdc-2.2-SNAPSHOT.jar) and put it under `<FLINK_HOME>/lib/`.
 
 How to create a Postgres CDC table
 ----------------
@@ -144,20 +147,93 @@ Connector Options
       <td>String</td>
       <td>Pass-through Debezium's properties to Debezium Embedded Engine which is used to capture data changes from Postgres server.
           For example: <code>'debezium.snapshot.mode' = 'never'</code>.
-          See more about the <a href="https://debezium.io/documentation/reference/1.2/connectors/postgresql.html#postgresql-connector-properties">Debezium's Postgres Connector properties</a></td> 
+          See more about the <a href="https://debezium.io/documentation/reference/1.5/connectors/postgresql.html#postgresql-connector-properties">Debezium's Postgres Connector properties</a></td> 
     </tr>   
     </tbody>
 </table>    
 </div>
 
-Note: `slot.name` is recommended to set for different tables to avoid the potential `PSQLException: ERROR: replication slot "flink" is active for PID 974` error. See more [here](https://debezium.io/documentation/reference/1.2/connectors/postgresql.html#postgresql-property-slot-name).
+Note: `slot.name` is recommended to set for different tables to avoid the potential `PSQLException: ERROR: replication slot "flink" is active for PID 974` error. See more [here](https://debezium.io/documentation/reference/1.5/connectors/postgresql.html#postgresql-property-slot-name).
+
+Available Metadata
+----------------
+
+The following format metadata can be exposed as read-only (VIRTUAL) columns in a table definition.
+
+<table class="colwidths-auto docutils">
+  <thead>
+     <tr>
+       <th class="text-left" style="width: 15%">Key</th>
+       <th class="text-left" style="width: 30%">DataType</th>
+       <th class="text-left" style="width: 55%">Description</th>
+     </tr>
+  </thead>
+  <tbody>
+    <tr>
+      <td>table_name</td>
+      <td>STRING NOT NULL</td>
+      <td>Name of the table that contain the row.</td>
+    </tr>
+    <tr>
+      <td>schema_name</td>
+      <td>STRING NOT NULL</td>
+      <td>Name of the schema that contain the row.</td>
+    </tr>    
+    <tr>
+      <td>database_name</td>
+      <td>STRING NOT NULL</td>
+      <td>Name of the database that contain the row.</td>
+    </tr>
+    <tr>
+      <td>op_ts</td>
+      <td>TIMESTAMP_LTZ(3) NOT NULL</td>
+      <td>It indicates the time that the change was made in the database. <br>If the record is read from snapshot of the table instead of the change stream, the value is always 0.</td>
+    </tr>
+  </tbody>
+</table>
+
+Limitation
+--------
+
+### Can't perform checkpoint during scanning snapshot of tables
+During scanning snapshot of database tables, since there is no recoverable position, we can't perform checkpoints. In order to not perform checkpoints, Postgres CDC source will keep the checkpoint waiting to timeout. The timeout checkpoint will be recognized as failed checkpoint, by default, this will trigger a failover for the Flink job. So if the database table is large, it is recommended to add following Flink configurations to avoid failover because of the timeout checkpoints:
+
+```
+execution.checkpointing.interval: 10min
+execution.checkpointing.tolerable-failed-checkpoints: 100
+restart-strategy: fixed-delay
+restart-strategy.fixed-delay.attempts: 2147483647
+```
+
+The extended CREATE TABLE example demonstrates the syntax for exposing these metadata fields:
+```sql
+CREATE TABLE products (
+    db_name STRING METADATA FROM 'database_name' VIRTUAL,
+    table_name STRING METADATA  FROM 'table_name' VIRTUAL,
+    operation_ts TIMESTAMP_LTZ(3) METADATA FROM 'op_ts' VIRTUAL,
+    shipment_id INT,
+    order_id INT,
+    origin STRING,
+    destination STRING,
+    is_arrived BOOLEAN
+) WITH (
+  'connector' = 'postgres-cdc',
+  'hostname' = 'localhost',
+  'port' = '5432',
+  'username' = 'postgres',
+  'password' = 'postgres',
+  'database-name' = 'postgres',
+  'schema-name' = 'public',
+  'table-name' = 'shipments'
+);
+```
 
 Features
 --------
 
 ### Exactly-Once Processing
 
-The Postgres CDC connector is a Flink Source connector which will read database snapshot first and then continues to read binlogs with **exactly-once processing** even failures happen. Please read [How the connector works](https://debezium.io/documentation/reference/1.2/connectors/postgresql.html#how-the-postgresql-connector-works). 
+The Postgres CDC connector is a Flink Source connector which will read database snapshot first and then continues to read binlogs with **exactly-once processing** even failures happen. Please read [How the connector works](https://debezium.io/documentation/reference/1.5/connectors/postgresql.html#how-the-postgresql-connector-works). 
 
 ### Single Thread Reading
 
@@ -170,7 +246,7 @@ The Postgres CDC connector can also be a DataStream source. You can create a Sou
 ```java
 import org.apache.flink.streaming.api.environment.StreamExecutionEnvironment;
 import org.apache.flink.streaming.api.functions.source.SourceFunction;
-import com.ververica.cdc.debezium.StringDebeziumDeserializationSchema;
+import com.ververica.cdc.debezium.JsonDebeziumDeserializationSchema;
 import com.ververica.cdc.connectors.postgres.PostgreSQLSource;
 
 public class PostgreSQLSourceExample {
@@ -178,11 +254,12 @@ public class PostgreSQLSourceExample {
     SourceFunction<String> sourceFunction = PostgreSQLSource.<String>builder()
       .hostname("localhost")
       .port(5432)
-      .database("postgres")
-      .schemaList("inventory") // monitor all tables under inventory schema
+      .database("postgres") // monitor postgres database
+      .schemaList("inventory")  // monitor inventory schema
+      .tableList("inventory.products") // monitor products table
       .username("flinkuser")
       .password("flinkpw")
-      .deserializer(new StringDebeziumDeserializationSchema()) // converts SourceRecord to String
+      .deserializer(new JsonDebeziumDeserializationSchema()) // converts SourceRecord to JSON String
       .build();
 
     StreamExecutionEnvironment env = StreamExecutionEnvironment.getExecutionEnvironment();
@@ -195,7 +272,7 @@ public class PostgreSQLSourceExample {
   }
 }
 ```
-
+**Note:** Please refer [Deserialization](../about.html#deserialization) for more details about the JSON deserialization.
 
 Data Type Mapping
 ----------------
@@ -291,3 +368,8 @@ Data Type Mapping
     </tbody>
 </table>
 </div>
+
+FAQ
+--------
+* [FAQ(English)](https://github.com/ververica/flink-cdc-connectors/wiki/FAQ)
+* [FAQ(中文)](https://github.com/ververica/flink-cdc-connectors/wiki/FAQ(ZH))

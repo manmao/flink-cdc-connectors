@@ -79,6 +79,64 @@ VALUES (101,"user_1","Shanghai","123567891234"),
        (1019,"user_20","Shanghai","123567891234"),
        (2000,"user_21","Shanghai","123567891234");
 
+-- create table whose split key is evenly distributed
+CREATE TABLE customers_even_dist (
+  id INTEGER NOT NULL PRIMARY KEY,
+  name VARCHAR(255) NOT NULL ,
+  address VARCHAR(1024),
+  phone_number VARCHAR(512)
+);
+INSERT INTO customers_even_dist
+VALUES (101,'user_1','Shanghai','123567891234'),
+       (102,'user_2','Shanghai','123567891234'),
+       (103,'user_3','Shanghai','123567891234'),
+       (104,'user_4','Shanghai','123567891234'),
+       (105,'user_5','Shanghai','123567891234'),
+       (106,'user_6','Shanghai','123567891234'),
+       (107,'user_7','Shanghai','123567891234'),
+       (108,'user_8','Shanghai','123567891234'),
+       (109,'user_9','Shanghai','123567891234'),
+       (110,'user_10','Shanghai','123567891234');
+
+-- create table whose split key is evenly distributed and sparse
+CREATE TABLE customers_sparse_dist (
+  id INTEGER NOT NULL PRIMARY KEY,
+  name VARCHAR(255) NOT NULL ,
+  address VARCHAR(1024),
+  phone_number VARCHAR(512)
+);
+INSERT INTO customers_sparse_dist
+VALUES (2,'user_1','Shanghai','123567891234'),
+       (4,'user_2','Shanghai','123567891234'),
+       (6,'user_3','Shanghai','123567891234'),
+       (8,'user_4','Shanghai','123567891234'),
+       (10,'user_5','Shanghai','123567891234'),
+       (16,'user_6','Shanghai','123567891234'),
+       (17,'user_7','Shanghai','123567891234'),
+       (18,'user_8','Shanghai','123567891234'),
+       (20,'user_9','Shanghai','123567891234'),
+       (22,'user_10','Shanghai','123567891234');
+
+-- create table whose split key is evenly distributed and dense
+CREATE TABLE customers_dense_dist (
+ id1 INTEGER NOT NULL,
+ id2 VARCHAR(255) NOT NULL ,
+ address VARCHAR(1024),
+ phone_number VARCHAR(512),
+ PRIMARY KEY(id1, id2)
+);
+INSERT INTO customers_dense_dist
+VALUES (1,'user_1','Shanghai','123567891234'),
+       (1,'user_2','Shanghai','123567891234'),
+       (1,'user_3','Shanghai','123567891234'),
+       (1,'user_4','Shanghai','123567891234'),
+       (2,'user_5','Shanghai','123567891234'),
+       (2,'user_6','Shanghai','123567891234'),
+       (2,'user_7','Shanghai','123567891234'),
+       (3,'user_8','Shanghai','123567891234'),
+       (3,'user_9','Shanghai','123567891234'),
+       (3,'user_10','Shanghai','123567891234');
+
 -- table has combined primary key
 CREATE TABLE customer_card (
   card_no BIGINT NOT NULL,
@@ -164,11 +222,30 @@ CREATE TABLE shopping_cart_dec (
   product_no DECIMAL(10, 4) NOT NULL,
   product_kind VARCHAR(255),
   user_id VARCHAR(255) NOT NULL,
-  description VARCHAR(255) NOT NULL,
+  description VARCHAR(255) DEFAULT 'flink',
   PRIMARY KEY(product_no)
 );
 
 insert into shopping_cart_dec
 VALUES (123456.123, 'KIND_001', 'user_1', 'my shopping cart'),
-       (124456.456, 'KIND_002', 'user_1', 'my shopping cart'),
-       (125489.6789, 'KIND_003', 'user_1', 'my shopping cart');
+       (123457.456, 'KIND_002', 'user_2', 'my shopping cart'),
+       (123458.6789, 'KIND_003', 'user_3', 'my shopping cart'),
+       (123459.1234, 'KIND_004', 'user_4', null);
+
+-- create table whose primary key are produced by snowflake algorithm
+CREATE TABLE address (
+  id BIGINT UNSIGNED NOT NULL PRIMARY KEY,
+  country VARCHAR(255) NOT NULL,
+  city VARCHAR(255) NOT NULL,
+  detail_address VARCHAR(1024)
+);
+
+INSERT INTO address
+VALUES (416874195632735147, 'China', 'Beijing', 'West Town address 1'),
+       (416927583791428523, 'China', 'Beijing', 'West Town address 2'),
+       (417022095255614379, 'China', 'Beijing', 'West Town address 3'),
+       (417111867899200427, 'America', 'New York', 'East Town address 1'),
+       (417271541558096811, 'America', 'New York', 'East Town address 2'),
+       (417272886855938987, 'America', 'New York', 'East Town address 3'),
+       (417420106184475563, 'Germany', 'Berlin', 'West Town address 1'),
+       (418161258277847979, 'Germany', 'Berlin', 'West Town address 2');

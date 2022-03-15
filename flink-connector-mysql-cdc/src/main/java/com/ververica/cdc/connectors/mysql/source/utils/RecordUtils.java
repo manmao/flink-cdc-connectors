@@ -18,14 +18,13 @@
 
 package com.ververica.cdc.connectors.mysql.source.utils;
 
-import org.apache.flink.table.types.logical.LogicalTypeRoot;
 import org.apache.flink.table.types.logical.RowType;
 
 import com.ververica.cdc.connectors.mysql.debezium.dispatcher.SignalEventDispatcher.WatermarkKind;
+import com.ververica.cdc.connectors.mysql.debezium.reader.DebeziumReader;
 import com.ververica.cdc.connectors.mysql.source.offset.BinlogOffset;
 import com.ververica.cdc.connectors.mysql.source.split.FinishedSnapshotSplitInfo;
 import com.ververica.cdc.connectors.mysql.source.split.MySqlSnapshotSplit;
-import com.ververica.cdc.connectors.mysql.source.split.MySqlSplit;
 import io.debezium.data.Envelope;
 import io.debezium.document.DocumentReader;
 import io.debezium.relational.TableId;
@@ -41,14 +40,14 @@ import java.sql.SQLException;
 import java.time.Instant;
 import java.util.ArrayList;
 import java.util.Arrays;
+import java.util.Collection;
 import java.util.HashMap;
 import java.util.List;
 import java.util.Map;
 import java.util.Optional;
+import java.util.stream.Collectors;
 
 import static com.ververica.cdc.connectors.mysql.debezium.dispatcher.EventDispatcherImpl.HISTORY_RECORD_FIELD;
-import static com.ververica.cdc.connectors.mysql.debezium.dispatcher.SignalEventDispatcher.BINLOG_FILENAME_OFFSET_KEY;
-import static com.ververica.cdc.connectors.mysql.debezium.dispatcher.SignalEventDispatcher.BINLOG_POSITION_OFFSET_KEY;
 import static com.ververica.cdc.connectors.mysql.debezium.dispatcher.SignalEventDispatcher.SIGNAL_EVENT_VALUE_SCHEMA_NAME;
 import static com.ververica.cdc.connectors.mysql.debezium.dispatcher.SignalEventDispatcher.SPLIT_ID_KEY;
 import static com.ververica.cdc.connectors.mysql.debezium.dispatcher.SignalEventDispatcher.WATERMARK_KIND;
@@ -63,6 +62,8 @@ public class RecordUtils {
 
     public static final String SCHEMA_CHANGE_EVENT_KEY_NAME =
             "io.debezium.connector.mysql.SchemaChangeKey";
+    public static final String SCHEMA_HEARTBEAT_EVENT_KEY_NAME =
+            "io.debezium.connector.common.Heartbeat";
     private static final DocumentReader DOCUMENT_READER = DocumentReader.defaultReader();
 
     /** Converts a {@link ResultSet} row to an array of Objects. */
@@ -112,11 +113,13 @@ public class RecordUtils {
                 List<SourceRecord> allBinlogRecords =
                         sourceRecords.subList(i, sourceRecords.size() - 1);
                 for (SourceRecord binlog : allBinlogRecords) {
-                    Object[] key =
-                            getSplitKey(snapshotSplit.getSplitKeyType(), binlog, nameAdjuster);
-                    if (splitKeyRangeContains(
-                            key, snapshotSplit.getSplitStart(), snapshotSplit.getSplitEnd())) {
-                        binlogRecords.add(binlog);
+                    if (isDataChangeRecord(binlog)) {
+                        Object[] key =
+                                getSplitKey(snapshotSplit.getSplitKeyType(), binlog, nameAdjuster);
+                        if (splitKeyRangeContains(
+                                key, snapshotSplit.getSplitStart(), snapshotSplit.getSplitEnd())) {
+                            binlogRecords.add(binlog);
+                        }
                     }
                 }
             }
@@ -126,24 +129,16 @@ public class RecordUtils {
                             "The last record should be high watermark signal event, but is %s",
                             highWatermark));
             normalizedRecords =
-                    upsertBinlog(
-                            snapshotSplit,
-                            lowWatermark,
-                            highWatermark,
-                            snapshotRecords,
-                            binlogRecords);
+                    upsertBinlog(lowWatermark, highWatermark, snapshotRecords, binlogRecords);
         }
         return normalizedRecords;
     }
 
     private static List<SourceRecord> upsertBinlog(
-            MySqlSplit split,
             SourceRecord lowWatermarkEvent,
             SourceRecord highWatermarkEvent,
             Map<Struct, SourceRecord> snapshotRecords,
             List<SourceRecord> binlogRecords) {
-        final List<SourceRecord> normalizedBinlogRecords = new ArrayList<>();
-        normalizedBinlogRecords.add(lowWatermarkEvent);
         // upsert binlog events to snapshot events of split
         if (!binlogRecords.isEmpty()) {
             for (SourceRecord binlog : binlogRecords) {
@@ -154,11 +149,12 @@ public class RecordUtils {
                             Envelope.Operation.forCode(
                                     value.getString(Envelope.FieldName.OPERATION));
                     switch (operation) {
+                        case CREATE:
                         case UPDATE:
                             Envelope envelope = Envelope.fromSchema(binlog.valueSchema());
                             Struct source = value.getStruct(Envelope.FieldName.SOURCE);
-                            Struct updateAfter = value.getStruct(Envelope.FieldName.AFTER);
-                            Instant ts =
+                            Struct after = value.getStruct(Envelope.FieldName.AFTER);
+                            Instant fetchTs =
                                     Instant.ofEpochMilli(
                                             (Long) source.get(Envelope.FieldName.TIMESTAMP));
                             SourceRecord record =
@@ -170,21 +166,11 @@ public class RecordUtils {
                                             binlog.keySchema(),
                                             binlog.key(),
                                             binlog.valueSchema(),
-                                            envelope.read(updateAfter, source, ts));
-                            normalizedBinlogRecords.add(record);
+                                            envelope.read(after, source, fetchTs));
+                            snapshotRecords.put(key, record);
                             break;
                         case DELETE:
-                            if (snapshotRecords.containsKey(key)) {
-                                snapshotRecords.remove(key);
-                            } else {
-                                throw new IllegalStateException(
-                                        String.format(
-                                                "The delete record %s doesn't exists in table split %s.",
-                                                binlog, split));
-                            }
-                            break;
-                        case CREATE:
-                            normalizedBinlogRecords.add(binlog);
+                            snapshotRecords.remove(key);
                             break;
                         case READ:
                             throw new IllegalStateException(
@@ -195,9 +181,46 @@ public class RecordUtils {
                 }
             }
         }
-        normalizedBinlogRecords.addAll(snapshotRecords.values());
-        normalizedBinlogRecords.add(highWatermarkEvent);
-        return normalizedBinlogRecords;
+
+        final List<SourceRecord> normalizedRecords = new ArrayList<>();
+        normalizedRecords.add(lowWatermarkEvent);
+        normalizedRecords.addAll(formatMessageTimestamp(snapshotRecords.values()));
+        normalizedRecords.add(highWatermarkEvent);
+
+        return normalizedRecords;
+    }
+
+    /**
+     * Format message timestamp(source.ts_ms) value to 0L for all records read in snapshot phase.
+     */
+    private static List<SourceRecord> formatMessageTimestamp(
+            Collection<SourceRecord> snapshotRecords) {
+        return snapshotRecords.stream()
+                .map(
+                        record -> {
+                            Envelope envelope = Envelope.fromSchema(record.valueSchema());
+                            Struct value = (Struct) record.value();
+                            Struct updateAfter = value.getStruct(Envelope.FieldName.AFTER);
+                            // set message timestamp (source.ts_ms) to 0L
+                            Struct source = value.getStruct(Envelope.FieldName.SOURCE);
+                            source.put(Envelope.FieldName.TIMESTAMP, 0L);
+                            // extend the fetch timestamp(ts_ms)
+                            Instant fetchTs =
+                                    Instant.ofEpochMilli(
+                                            value.getInt64(Envelope.FieldName.TIMESTAMP));
+                            SourceRecord sourceRecord =
+                                    new SourceRecord(
+                                            record.sourcePartition(),
+                                            record.sourceOffset(),
+                                            record.topic(),
+                                            record.kafkaPartition(),
+                                            record.keySchema(),
+                                            record.key(),
+                                            record.valueSchema(),
+                                            envelope.read(updateAfter, source, fetchTs));
+                            return sourceRecord;
+                        })
+                .collect(Collectors.toList());
     }
 
     public static boolean isWatermarkEvent(SourceRecord record) {
@@ -230,10 +253,43 @@ public class RecordUtils {
     }
 
     public static BinlogOffset getWatermark(SourceRecord watermarkEvent) {
-        Struct value = (Struct) watermarkEvent.value();
-        String file = value.getString(BINLOG_FILENAME_OFFSET_KEY);
-        Long position = value.getInt64(BINLOG_POSITION_OFFSET_KEY);
-        return new BinlogOffset(file, position);
+        return getBinlogPosition(watermarkEvent.sourceOffset());
+    }
+
+    /**
+     * Return the timestamp when the change event is produced in MySQL.
+     *
+     * <p>The field `source.ts_ms` in {@link SourceRecord} data struct is the time when the change
+     * event is operated in MySQL.
+     */
+    public static Long getMessageTimestamp(SourceRecord record) {
+        Schema schema = record.valueSchema();
+        Struct value = (Struct) record.value();
+        if (schema.field(Envelope.FieldName.SOURCE) == null) {
+            return null;
+        }
+
+        Struct source = value.getStruct(Envelope.FieldName.SOURCE);
+        if (source.schema().field(Envelope.FieldName.TIMESTAMP) == null) {
+            return null;
+        }
+
+        return source.getInt64(Envelope.FieldName.TIMESTAMP);
+    }
+
+    /**
+     * Return the timestamp when the change event is fetched in {@link DebeziumReader}.
+     *
+     * <p>The field `ts_ms` in {@link SourceRecord} data struct is the time when the record fetched
+     * by debezium reader, use it as the process time in Source.
+     */
+    public static Long getFetchTimestamp(SourceRecord record) {
+        Schema schema = record.valueSchema();
+        Struct value = (Struct) record.value();
+        if (schema.field(Envelope.FieldName.TIMESTAMP) == null) {
+            return null;
+        }
+        return value.getInt64(Envelope.FieldName.TIMESTAMP);
     }
 
     public static boolean isSchemaChangeEvent(SourceRecord sourceRecord) {
@@ -242,6 +298,12 @@ public class RecordUtils {
             return true;
         }
         return false;
+    }
+
+    public static boolean isHeartbeatEvent(SourceRecord record) {
+        Schema valueSchema = record.valueSchema();
+        return valueSchema != null
+                && SCHEMA_HEARTBEAT_EVENT_KEY_NAME.equalsIgnoreCase(valueSchema.name());
     }
 
     /**
@@ -254,14 +316,12 @@ public class RecordUtils {
             MySqlSnapshotSplit split, SourceRecord highWatermark) {
         Struct value = (Struct) highWatermark.value();
         String splitId = value.getString(SPLIT_ID_KEY);
-        String file = value.getString(BINLOG_FILENAME_OFFSET_KEY);
-        Long position = value.getInt64(BINLOG_POSITION_OFFSET_KEY);
         return new FinishedSnapshotSplitInfo(
                 split.getTableId(),
                 splitId,
                 split.getSplitStart(),
                 split.getSplitEnd(),
-                new BinlogOffset(file, position));
+                getBinlogPosition(highWatermark.sourceOffset()));
     }
 
     /** Returns the start offset of the binlog split. */
@@ -272,7 +332,7 @@ public class RecordUtils {
                         ? BinlogOffset.INITIAL_OFFSET
                         : finishedSnapshotSplits.get(0).getHighWatermark();
         for (FinishedSnapshotSplitInfo finishedSnapshotSplit : finishedSnapshotSplits) {
-            if (!finishedSnapshotSplit.getHighWatermark().isAtOrBefore(startOffset)) {
+            if (finishedSnapshotSplit.getHighWatermark().isBefore(startOffset)) {
                 startOffset = finishedSnapshotSplit.getHighWatermark();
             }
         }
@@ -303,11 +363,16 @@ public class RecordUtils {
     }
 
     public static BinlogOffset getBinlogPosition(SourceRecord dataRecord) {
-        Struct value = (Struct) dataRecord.value();
-        Struct source = value.getStruct(Envelope.FieldName.SOURCE);
-        String fileName = (String) source.get(BINLOG_FILENAME_OFFSET_KEY);
-        Long position = (Long) (source.get(BINLOG_POSITION_OFFSET_KEY));
-        return new BinlogOffset(fileName, position);
+        return getBinlogPosition(dataRecord.sourceOffset());
+    }
+
+    public static BinlogOffset getBinlogPosition(Map<String, ?> offset) {
+        Map<String, String> offsetStrMap = new HashMap<>();
+        for (Map.Entry<String, ?> entry : offset.entrySet()) {
+            offsetStrMap.put(
+                    entry.getKey(), entry.getValue() == null ? null : entry.getValue().toString());
+        }
+        return new BinlogOffset(offsetStrMap);
     }
 
     /** Returns the specific key contains in the split key range or not. */
@@ -348,15 +413,8 @@ public class RecordUtils {
         }
     }
 
-    /** Return the split key type can use numeric optimization or not. */
-    public static boolean isOptimizedKeyType(LogicalTypeRoot typeRoot) {
-        return typeRoot == LogicalTypeRoot.BIGINT
-                || typeRoot == LogicalTypeRoot.INTEGER
-                || typeRoot == LogicalTypeRoot.DECIMAL;
-    }
-
     private static int compareObjects(Object o1, Object o2) {
-        if (o1 instanceof Comparable) {
+        if (o1 instanceof Comparable && o1.getClass().equals(o2.getClass())) {
             return ((Comparable) o1).compareTo(o2);
         } else {
             return o1.toString().compareTo(o2.toString());

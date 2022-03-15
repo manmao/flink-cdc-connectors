@@ -70,11 +70,12 @@ public class MySqlBinlogSplitState extends MySqlSplitState {
         final MySqlBinlogSplit binlogSplit = split.asBinlogSplit();
         return new MySqlBinlogSplit(
                 binlogSplit.splitId(),
-                binlogSplit.getSplitKeyType(),
                 getStartingOffset(),
                 getEndingOffset(),
                 binlogSplit.asBinlogSplit().getFinishedSnapshotSplitInfos(),
-                getTableSchemas());
+                getTableSchemas(),
+                binlogSplit.getTotalFinishedSplitSize(),
+                binlogSplit.isSuspended());
     }
 
     @Override

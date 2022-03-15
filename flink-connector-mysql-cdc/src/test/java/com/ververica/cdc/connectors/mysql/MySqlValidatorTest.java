@@ -19,16 +19,17 @@
 package com.ververica.cdc.connectors.mysql;
 
 import org.apache.flink.api.connector.source.mocks.MockSplitEnumeratorContext;
-import org.apache.flink.configuration.Configuration;
 import org.apache.flink.table.api.ValidationException;
 
-import com.ververica.cdc.connectors.mysql.source.MySqlParallelSource;
-import com.ververica.cdc.connectors.mysql.source.utils.MySqlContainer;
-import com.ververica.cdc.connectors.mysql.source.utils.UniqueDatabase;
+import com.ververica.cdc.connectors.mysql.source.MySqlSource;
+import com.ververica.cdc.connectors.mysql.testutils.MySqlContainer;
+import com.ververica.cdc.connectors.mysql.testutils.MySqlVersion;
+import com.ververica.cdc.connectors.mysql.testutils.UniqueDatabase;
 import com.ververica.cdc.debezium.DebeziumSourceFunction;
 import org.apache.kafka.connect.source.SourceRecord;
 import org.junit.AfterClass;
 import org.junit.BeforeClass;
+import org.junit.Ignore;
 import org.junit.Test;
 import org.junit.rules.TemporaryFolder;
 import org.junit.runner.RunWith;
@@ -43,13 +44,17 @@ import java.nio.file.Files;
 import java.nio.file.Path;
 import java.nio.file.Paths;
 import java.nio.file.StandardOpenOption;
+import java.util.Arrays;
 import java.util.Collections;
+import java.util.List;
 import java.util.Objects;
 import java.util.UUID;
 import java.util.stream.Stream;
 
 import static com.ververica.cdc.connectors.mysql.MySqlTestUtils.basicSourceBuilder;
 import static com.ververica.cdc.connectors.mysql.MySqlTestUtils.setupSource;
+import static com.ververica.cdc.connectors.mysql.testutils.MySqlVersion.V5_5;
+import static com.ververica.cdc.connectors.mysql.testutils.MySqlVersion.V5_7;
 import static org.junit.Assert.assertEquals;
 import static org.junit.Assert.assertTrue;
 import static org.junit.Assert.fail;
@@ -62,15 +67,12 @@ public class MySqlValidatorTest {
 
     private static TemporaryFolder tempFolder;
     private static File resourceFolder;
-    final boolean runIncrementalSnapshot;
+
+    @Parameterized.Parameter public boolean runIncrementalSnapshot;
 
     @Parameterized.Parameters(name = "runIncrementalSnapshot = {0}")
-    public static Object[] parameters() {
-        return new Object[] {true, false};
-    }
-
-    public MySqlValidatorTest(boolean runIncrementalSnapshot) {
-        this.runIncrementalSnapshot = runIncrementalSnapshot;
+    public static List<Boolean> parameters() {
+        return Arrays.asList(true, false);
     }
 
     @BeforeClass
@@ -92,14 +94,15 @@ public class MySqlValidatorTest {
         tempFolder.delete();
     }
 
+    @Ignore("The jdbc driver used in this module cannot connect to MySQL 5.5")
     @Test
     public void testValidateVersion() {
-        String version = "5.6";
+        MySqlVersion version = V5_5;
         String message =
                 String.format(
-                        "Currently Flink MySql CDC connector only supports MySql whose version is larger or equal to 5.7, but actual is %s.",
+                        "Currently Flink MySql CDC connector only supports MySql whose version is larger or equal to 5.6, but actual is %s.",
                         version);
-        doValidate(version, "docker/my.cnf", message);
+        doValidate(version, "docker/server/my.cnf", message);
     }
 
     @Test
@@ -111,7 +114,7 @@ public class MySqlValidatorTest {
                                 + "connector to work properly. Change the MySQL configuration to use a binlog_format=ROW "
                                 + "and restart the connector.",
                         mode);
-        doValidate("5.7", buildMySqlConfigFile("[mysqld]\nbinlog_format = " + mode), message);
+        doValidate(V5_7, buildMySqlConfigFile("[mysqld]\nbinlog_format = " + mode), message);
     }
 
     @Test
@@ -124,13 +127,14 @@ public class MySqlValidatorTest {
                                 + "binlog_row_image=FULL and restart the connector.",
                         mode);
         doValidate(
-                "5.7",
+                V5_7,
                 buildMySqlConfigFile("[mysqld]\nbinlog_format = ROW\nbinlog_row_image = " + mode),
                 message);
     }
 
-    private void doValidate(String tag, String configPath, String exceptionMessage) {
-        MySqlContainer container = new MySqlContainer(tag).withConfigurationOverride(configPath);
+    private void doValidate(MySqlVersion version, String configPath, String exceptionMessage) {
+        MySqlContainer container =
+                new MySqlContainer(version).withConfigurationOverride(configPath);
 
         LOG.info("Starting containers...");
         Startables.deepStart(Stream.of(container)).join();
@@ -151,11 +155,18 @@ public class MySqlValidatorTest {
 
     private void startSource(UniqueDatabase database) throws Exception {
         if (runIncrementalSnapshot) {
-            MySqlParallelSource<?> mySqlParallelSource =
-                    new MySqlParallelSource<>(
-                            new MySqlTestUtils.ForwardDeserializeSchema(),
-                            Configuration.fromMap(database.getConfigMap()));
-            mySqlParallelSource.createEnumerator(new MockSplitEnumeratorContext<>(1)).start();
+            MySqlSource<?> mySqlSource =
+                    MySqlSource.<SourceRecord>builder()
+                            .hostname(database.getHost())
+                            .username(database.getUsername())
+                            .password(database.getPassword())
+                            .port(database.getDatabasePort())
+                            .databaseList(database.getDatabaseName())
+                            .tableList(database.getDatabaseName() + ".products")
+                            .deserializer(new MySqlTestUtils.ForwardDeserializeSchema())
+                            .build();
+
+            mySqlSource.createEnumerator(new MockSplitEnumeratorContext<>(1)).start();
         } else {
             DebeziumSourceFunction<SourceRecord> source =
                     basicSourceBuilder(database, false).build();

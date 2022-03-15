@@ -62,6 +62,7 @@ import org.slf4j.LoggerFactory;
 import javax.annotation.Nullable;
 
 import java.io.IOException;
+import java.lang.reflect.Method;
 import java.nio.charset.StandardCharsets;
 import java.util.Collection;
 import java.util.Properties;
@@ -101,7 +102,7 @@ import static com.ververica.cdc.debezium.utils.DatabaseHistoryUtil.retrieveHisto
  * <p>Note: currently, the source function can't run in multiple parallel instances.
  *
  * <p>Please refer to Debezium's documentation for the available configuration properties:
- * https://debezium.io/documentation/reference/1.2/development/engine.html#engine-properties
+ * https://debezium.io/documentation/reference/1.5/development/engine.html#engine-properties
  */
 @PublicEvolving
 public class DebeziumSourceFunction<T> extends RichSourceFunction<T>
@@ -370,9 +371,6 @@ public class DebeziumSourceFunction<T> extends RichSourceFunction<T>
             // restored from state
             properties.setProperty(FlinkOffsetBackingStore.OFFSET_STATE_VALUE, restoredOffsetState);
         }
-        // DO NOT include schema payload in change event
-        properties.setProperty("key.converter.schemas.enable", "false");
-        properties.setProperty("value.converter.schemas.enable", "false");
         // DO NOT include schema change, e.g. DDL
         properties.setProperty("include.schema.changes", "false");
         // disable the offset flush totally
@@ -428,7 +426,13 @@ public class DebeziumSourceFunction<T> extends RichSourceFunction<T>
         debeziumStarted = true;
 
         // initialize metrics
-        MetricGroup metricGroup = getRuntimeContext().getMetricGroup();
+        // make RuntimeContext#getMetricGroup compatible between Flink 1.13 and Flink 1.14
+        final Method getMetricGroupMethod =
+                getRuntimeContext().getClass().getMethod("getMetricGroup");
+        getMetricGroupMethod.setAccessible(true);
+        final MetricGroup metricGroup =
+                (MetricGroup) getMetricGroupMethod.invoke(getRuntimeContext());
+
         metricGroup.gauge(
                 "currentFetchEventTimeLag",
                 (Gauge<Long>) () -> debeziumChangeFetcher.getFetchDelay());
@@ -492,7 +496,9 @@ public class DebeziumSourceFunction<T> extends RichSourceFunction<T>
     public void cancel() {
         // safely and gracefully stop the engine
         shutdownEngine();
-        debeziumChangeFetcher.close();
+        if (debeziumChangeFetcher != null) {
+            debeziumChangeFetcher.close();
+        }
     }
 
     @Override

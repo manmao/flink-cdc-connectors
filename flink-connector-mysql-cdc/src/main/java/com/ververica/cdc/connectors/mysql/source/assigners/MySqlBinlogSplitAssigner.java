@@ -18,24 +18,21 @@
 
 package com.ververica.cdc.connectors.mysql.source.assigners;
 
-import org.apache.flink.configuration.Configuration;
-import org.apache.flink.table.api.DataTypes;
-import org.apache.flink.table.types.logical.RowType;
 import org.apache.flink.util.FlinkRuntimeException;
 
-import com.ververica.cdc.connectors.mysql.schema.MySqlSchema;
-import com.ververica.cdc.connectors.mysql.source.MySqlSourceOptions;
+import com.ververica.cdc.connectors.mysql.debezium.DebeziumUtils;
 import com.ververica.cdc.connectors.mysql.source.assigners.state.BinlogPendingSplitsState;
 import com.ververica.cdc.connectors.mysql.source.assigners.state.PendingSplitsState;
+import com.ververica.cdc.connectors.mysql.source.config.MySqlSourceConfig;
 import com.ververica.cdc.connectors.mysql.source.offset.BinlogOffset;
+import com.ververica.cdc.connectors.mysql.source.split.FinishedSnapshotSplitInfo;
 import com.ververica.cdc.connectors.mysql.source.split.MySqlBinlogSplit;
 import com.ververica.cdc.connectors.mysql.source.split.MySqlSplit;
-import io.debezium.connector.mysql.MySqlConnection;
-import io.debezium.relational.RelationalTableFilters;
-import io.debezium.relational.TableId;
-import io.debezium.relational.history.TableChanges.TableChange;
+import io.debezium.jdbc.JdbcConnection;
+import org.slf4j.Logger;
+import org.slf4j.LoggerFactory;
 
-import java.sql.SQLException;
+import java.util.ArrayList;
 import java.util.Collection;
 import java.util.Collections;
 import java.util.HashMap;
@@ -43,49 +40,35 @@ import java.util.List;
 import java.util.Map;
 import java.util.Optional;
 
-import static com.ververica.cdc.connectors.mysql.debezium.DebeziumUtils.closeMySqlConnection;
-import static com.ververica.cdc.connectors.mysql.debezium.DebeziumUtils.createTableFilters;
 import static com.ververica.cdc.connectors.mysql.debezium.DebeziumUtils.currentBinlogOffset;
-import static com.ververica.cdc.connectors.mysql.debezium.DebeziumUtils.openMySqlConnection;
-import static com.ververica.cdc.connectors.mysql.debezium.task.context.StatefulTaskContext.toDebeziumConfig;
-import static com.ververica.cdc.connectors.mysql.source.utils.TableDiscoveryUtils.listTables;
-import static org.apache.flink.table.api.DataTypes.FIELD;
-import static org.apache.flink.table.api.DataTypes.ROW;
 
-/**
- * A {@link MySqlSplitAssigner} which only read binlog from current binlog position.
- *
- * <p>TODO: the table and schema discovery should happen in split reader instead of here, to reduce
- * the split size.
- */
+/** A {@link MySqlSplitAssigner} which only read binlog from current binlog position. */
 public class MySqlBinlogSplitAssigner implements MySqlSplitAssigner {
+
+    private static final Logger LOG = LoggerFactory.getLogger(MySqlBinlogSplitAssigner.class);
     private static final String BINLOG_SPLIT_ID = "binlog-split";
 
-    private final Configuration configuration;
-    private final RelationalTableFilters tableFilters;
+    private final MySqlSourceConfig sourceConfig;
 
-    private MySqlConnection jdbc;
     private boolean isBinlogSplitAssigned;
 
-    public MySqlBinlogSplitAssigner(Configuration configuration) {
-        this(configuration, false);
+    public MySqlBinlogSplitAssigner(MySqlSourceConfig sourceConfig) {
+        this(sourceConfig, false);
     }
 
     public MySqlBinlogSplitAssigner(
-            Configuration configuration, BinlogPendingSplitsState checkpoint) {
-        this(configuration, checkpoint.isBinlogSplitAssigned());
+            MySqlSourceConfig sourceConfig, BinlogPendingSplitsState checkpoint) {
+        this(sourceConfig, checkpoint.isBinlogSplitAssigned());
     }
 
-    private MySqlBinlogSplitAssigner(Configuration configuration, boolean isBinlogSplitAssigned) {
-        this.configuration = configuration;
-        this.tableFilters = createTableFilters(configuration);
+    private MySqlBinlogSplitAssigner(
+            MySqlSourceConfig sourceConfig, boolean isBinlogSplitAssigned) {
+        this.sourceConfig = sourceConfig;
         this.isBinlogSplitAssigned = isBinlogSplitAssigned;
     }
 
     @Override
-    public void open() {
-        jdbc = openMySqlConnection(configuration);
-    }
+    public void open() {}
 
     @Override
     public Optional<MySqlSplit> getNext() {
@@ -100,6 +83,11 @@ public class MySqlBinlogSplitAssigner implements MySqlSplitAssigner {
     @Override
     public boolean waitingForFinishedSplits() {
         return false;
+    }
+
+    @Override
+    public List<FinishedSnapshotSplitInfo> getFinishedSplitInfos() {
+        return Collections.EMPTY_LIST;
     }
 
     @Override
@@ -124,52 +112,32 @@ public class MySqlBinlogSplitAssigner implements MySqlSplitAssigner {
     }
 
     @Override
-    public void close() {
-        if (jdbc != null) {
-            closeMySqlConnection(jdbc);
-        }
+    public AssignerStatus getAssignerStatus() {
+        return AssignerStatus.INITIAL_ASSIGNING_FINISHED;
     }
+
+    @Override
+    public void suspend() {}
+
+    @Override
+    public void wakeup() {}
+
+    @Override
+    public void close() {}
 
     // ------------------------------------------------------------------------------------------
 
     private MySqlBinlogSplit createBinlogSplit() {
-        Map<TableId, TableChange> tableSchemas = discoverCapturedTableSchemas();
-        // TODO: binlog-only source shouldn't need split key (e.g. no primary key tables),
-        //  mock a split key here which should never be used later. We should refactor
-        //  MySqlBinlogSplit ASAP.
-        final RowType splitKeyType =
-                (RowType) ROW(FIELD("id", DataTypes.BIGINT().notNull())).getLogicalType();
-        return new MySqlBinlogSplit(
-                BINLOG_SPLIT_ID,
-                splitKeyType,
-                currentBinlogOffset(jdbc),
-                BinlogOffset.NO_STOPPING_OFFSET,
-                Collections.emptyList(),
-                tableSchemas);
-    }
-
-    private Map<TableId, TableChange> discoverCapturedTableSchemas() {
-        final List<TableId> capturedTableIds;
-        try {
-            capturedTableIds = listTables(jdbc, tableFilters);
-        } catch (SQLException e) {
-            throw new FlinkRuntimeException("Failed to discover captured tables", e);
+        try (JdbcConnection jdbc = DebeziumUtils.openJdbcConnection(sourceConfig)) {
+            return new MySqlBinlogSplit(
+                    BINLOG_SPLIT_ID,
+                    currentBinlogOffset(jdbc),
+                    BinlogOffset.NO_STOPPING_OFFSET,
+                    new ArrayList<>(),
+                    new HashMap<>(),
+                    0);
+        } catch (Exception e) {
+            throw new FlinkRuntimeException("Read the binlog offset error", e);
         }
-        if (capturedTableIds.isEmpty()) {
-            throw new IllegalArgumentException(
-                    String.format(
-                            "Can't find any matched tables, please check your configured database-name: %s and table-name: %s",
-                            configuration.get(MySqlSourceOptions.DATABASE_NAME),
-                            configuration.get(MySqlSourceOptions.TABLE_NAME)));
-        }
-
-        // fetch table schemas
-        MySqlSchema mySqlSchema = new MySqlSchema(toDebeziumConfig(configuration), jdbc);
-        Map<TableId, TableChange> tableSchemas = new HashMap<>();
-        for (TableId tableId : capturedTableIds) {
-            TableChange tableSchema = mySqlSchema.getTableSchema(tableId);
-            tableSchemas.put(tableId, tableSchema);
-        }
-        return tableSchemas;
     }
 }

@@ -22,9 +22,11 @@ import org.apache.flink.api.common.state.CheckpointListener;
 
 import com.ververica.cdc.connectors.mysql.source.assigners.state.PendingSplitsState;
 import com.ververica.cdc.connectors.mysql.source.offset.BinlogOffset;
+import com.ververica.cdc.connectors.mysql.source.split.FinishedSnapshotSplitInfo;
 import com.ververica.cdc.connectors.mysql.source.split.MySqlSplit;
 
 import java.util.Collection;
+import java.util.List;
 import java.util.Map;
 import java.util.Optional;
 
@@ -52,6 +54,12 @@ public interface MySqlSplitAssigner {
      * #onFinishedSplits(Map)}.
      */
     boolean waitingForFinishedSplits();
+
+    /**
+     * Gets the finished splits information. This is useful meta data to generate a binlog split
+     * that considering finished snapshot splits.
+     */
+    List<FinishedSnapshotSplitInfo> getFinishedSplitInfos();
 
     /**
      * Callback to handle the finished splits with finished binlog offset. This is useful for
@@ -92,6 +100,18 @@ public interface MySqlSplitAssigner {
      * @see CheckpointListener#notifyCheckpointComplete(long)
      */
     void notifyCheckpointComplete(long checkpointId);
+
+    /** Gets the split assigner status, see {@code AssignerStatus}. */
+    AssignerStatus getAssignerStatus();
+
+    /**
+     * Suspends the assigner under {@link AssignerStatus#INITIAL_ASSIGNING_FINISHED} or {@link
+     * AssignerStatus#NEWLY_ADDED_ASSIGNING_FINISHED}.
+     */
+    void suspend();
+
+    /** Wakes up the assigner under {@link AssignerStatus#SUSPENDED}. */
+    void wakeup();
 
     /**
      * Called to close the assigner, in case it holds on to any resources, like threads or network

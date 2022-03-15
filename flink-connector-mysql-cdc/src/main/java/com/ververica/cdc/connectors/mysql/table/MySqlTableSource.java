@@ -19,48 +19,46 @@
 package com.ververica.cdc.connectors.mysql.table;
 
 import org.apache.flink.api.common.typeinfo.TypeInformation;
-import org.apache.flink.configuration.Configuration;
-import org.apache.flink.table.api.TableSchema;
+import org.apache.flink.table.catalog.ResolvedSchema;
 import org.apache.flink.table.connector.ChangelogMode;
 import org.apache.flink.table.connector.source.DynamicTableSource;
 import org.apache.flink.table.connector.source.ScanTableSource;
 import org.apache.flink.table.connector.source.SourceFunctionProvider;
 import org.apache.flink.table.connector.source.SourceProvider;
+import org.apache.flink.table.connector.source.abilities.SupportsReadingMetadata;
 import org.apache.flink.table.data.RowData;
+import org.apache.flink.table.types.DataType;
 import org.apache.flink.table.types.logical.RowType;
 import org.apache.flink.types.RowKind;
 
-import com.ververica.cdc.connectors.mysql.MySqlSource;
-import com.ververica.cdc.connectors.mysql.debezium.EmbeddedFlinkDatabaseHistory;
-import com.ververica.cdc.connectors.mysql.source.MySqlParallelSource;
-import com.ververica.cdc.connectors.mysql.source.MySqlSourceOptions;
+import com.ververica.cdc.connectors.mysql.source.MySqlSource;
 import com.ververica.cdc.debezium.DebeziumDeserializationSchema;
 import com.ververica.cdc.debezium.DebeziumSourceFunction;
+import com.ververica.cdc.debezium.table.MetadataConverter;
 import com.ververica.cdc.debezium.table.RowDataDebeziumDeserializeSchema;
 
 import javax.annotation.Nullable;
 
 import java.time.Duration;
 import java.time.ZoneId;
-import java.util.HashMap;
+import java.util.Collections;
+import java.util.List;
 import java.util.Map;
 import java.util.Objects;
 import java.util.Optional;
 import java.util.Properties;
+import java.util.stream.Collectors;
+import java.util.stream.Stream;
 
-import static com.ververica.cdc.connectors.mysql.source.MySqlSourceOptions.DATABASE_SERVER_NAME;
-import static com.ververica.cdc.connectors.mysql.source.MySqlSourceOptions.SCAN_INCREMENTAL_SNAPSHOT_CHUNK_SIZE;
-import static com.ververica.cdc.connectors.mysql.source.MySqlSourceOptions.SCAN_SNAPSHOT_FETCH_SIZE;
-import static com.ververica.cdc.connectors.mysql.source.MySqlSourceOptions.SERVER_ID;
 import static org.apache.flink.util.Preconditions.checkNotNull;
 
 /**
  * A {@link DynamicTableSource} that describes how to create a MySQL binlog source from a logical
  * description.
  */
-public class MySqlTableSource implements ScanTableSource {
+public class MySqlTableSource implements ScanTableSource, SupportsReadingMetadata {
 
-    private final TableSchema physicalSchema;
+    private final ResolvedSchema physicalSchema;
     private final int port;
     private final String hostname;
     private final String database;
@@ -72,12 +70,30 @@ public class MySqlTableSource implements ScanTableSource {
     private final Properties dbzProperties;
     private final boolean enableParallelRead;
     private final int splitSize;
+    private final int splitMetaGroupSize;
     private final int fetchSize;
     private final Duration connectTimeout;
+    private final int connectionPoolSize;
+    private final int connectMaxRetries;
+    private final double distributionFactorUpper;
+    private final double distributionFactorLower;
     private final StartupOptions startupOptions;
+    private final boolean scanNewlyAddedTableEnabled;
+    private final Properties jdbcProperties;
+    private final Duration heartbeatInterval;
+
+    // --------------------------------------------------------------------------------------------
+    // Mutable attributes
+    // --------------------------------------------------------------------------------------------
+
+    /** Data type that describes the final output of the source. */
+    protected DataType producedDataType;
+
+    /** Metadata that is appended at the end of a physical source row. */
+    protected List<String> metadataKeys;
 
     public MySqlTableSource(
-            TableSchema physicalSchema,
+            ResolvedSchema physicalSchema,
             int port,
             String hostname,
             String database,
@@ -89,9 +105,65 @@ public class MySqlTableSource implements ScanTableSource {
             @Nullable String serverId,
             boolean enableParallelRead,
             int splitSize,
+            int splitMetaGroupSize,
             int fetchSize,
             Duration connectTimeout,
-            StartupOptions startupOptions) {
+            int connectMaxRetries,
+            int connectionPoolSize,
+            double distributionFactorUpper,
+            double distributionFactorLower,
+            StartupOptions startupOptions,
+            Duration heartbeatInterval) {
+        this(
+                physicalSchema,
+                port,
+                hostname,
+                database,
+                tableName,
+                username,
+                password,
+                serverTimeZone,
+                dbzProperties,
+                serverId,
+                enableParallelRead,
+                splitSize,
+                splitMetaGroupSize,
+                fetchSize,
+                connectTimeout,
+                connectMaxRetries,
+                connectionPoolSize,
+                distributionFactorUpper,
+                distributionFactorLower,
+                startupOptions,
+                false,
+                new Properties(),
+                heartbeatInterval);
+    }
+
+    public MySqlTableSource(
+            ResolvedSchema physicalSchema,
+            int port,
+            String hostname,
+            String database,
+            String tableName,
+            String username,
+            String password,
+            ZoneId serverTimeZone,
+            Properties dbzProperties,
+            @Nullable String serverId,
+            boolean enableParallelRead,
+            int splitSize,
+            int splitMetaGroupSize,
+            int fetchSize,
+            Duration connectTimeout,
+            int connectMaxRetries,
+            int connectionPoolSize,
+            double distributionFactorUpper,
+            double distributionFactorLower,
+            StartupOptions startupOptions,
+            boolean scanNewlyAddedTableEnabled,
+            Properties jdbcProperties,
+            Duration heartbeatInterval) {
         this.physicalSchema = physicalSchema;
         this.port = port;
         this.hostname = checkNotNull(hostname);
@@ -104,9 +176,20 @@ public class MySqlTableSource implements ScanTableSource {
         this.dbzProperties = dbzProperties;
         this.enableParallelRead = enableParallelRead;
         this.splitSize = splitSize;
+        this.splitMetaGroupSize = splitMetaGroupSize;
         this.fetchSize = fetchSize;
         this.connectTimeout = connectTimeout;
+        this.connectMaxRetries = connectMaxRetries;
+        this.connectionPoolSize = connectionPoolSize;
+        this.distributionFactorUpper = distributionFactorUpper;
+        this.distributionFactorLower = distributionFactorLower;
         this.startupOptions = startupOptions;
+        this.scanNewlyAddedTableEnabled = scanNewlyAddedTableEnabled;
+        this.jdbcProperties = jdbcProperties;
+        // Mutable attributes
+        this.producedDataType = physicalSchema.toPhysicalRowDataType();
+        this.metadataKeys = Collections.emptyList();
+        this.heartbeatInterval = heartbeatInterval;
     }
 
     @Override
@@ -121,20 +204,51 @@ public class MySqlTableSource implements ScanTableSource {
 
     @Override
     public ScanRuntimeProvider getScanRuntimeProvider(ScanContext scanContext) {
-        RowType rowType = (RowType) physicalSchema.toRowDataType().getLogicalType();
-        TypeInformation<RowData> typeInfo =
-                scanContext.createTypeInformation(physicalSchema.toRowDataType());
+        RowType physicalDataType =
+                (RowType) physicalSchema.toPhysicalRowDataType().getLogicalType();
+        MetadataConverter[] metadataConverters = getMetadataConverters();
+        final TypeInformation<RowData> typeInfo =
+                scanContext.createTypeInformation(producedDataType);
+
         DebeziumDeserializationSchema<RowData> deserializer =
-                new RowDataDebeziumDeserializeSchema(
-                        rowType, typeInfo, ((rowData, rowKind) -> {}), serverTimeZone);
+                RowDataDebeziumDeserializeSchema.newBuilder()
+                        .setPhysicalRowType(physicalDataType)
+                        .setMetadataConverters(metadataConverters)
+                        .setResultTypeInfo(typeInfo)
+                        .setServerTimeZone(serverTimeZone)
+                        .setUserDefinedConverterFactory(
+                                MySqlDeserializationConverterFactory.instance())
+                        .build();
         if (enableParallelRead) {
-            Configuration configuration = getParallelSourceConf();
-            MySqlParallelSource<RowData> parallelSource =
-                    new MySqlParallelSource<>(deserializer, configuration);
+            MySqlSource<RowData> parallelSource =
+                    MySqlSource.<RowData>builder()
+                            .hostname(hostname)
+                            .port(port)
+                            .databaseList(database)
+                            .tableList(database + "." + tableName)
+                            .username(username)
+                            .password(password)
+                            .serverTimeZone(serverTimeZone.toString())
+                            .serverId(serverId)
+                            .splitSize(splitSize)
+                            .splitMetaGroupSize(splitMetaGroupSize)
+                            .distributionFactorUpper(distributionFactorUpper)
+                            .distributionFactorLower(distributionFactorLower)
+                            .fetchSize(fetchSize)
+                            .connectTimeout(connectTimeout)
+                            .connectMaxRetries(connectMaxRetries)
+                            .connectionPoolSize(connectionPoolSize)
+                            .debeziumProperties(dbzProperties)
+                            .startupOptions(startupOptions)
+                            .deserializer(deserializer)
+                            .scanNewlyAddedTableEnabled(scanNewlyAddedTableEnabled)
+                            .jdbcProperties(jdbcProperties)
+                            .heartbeatInterval(heartbeatInterval)
+                            .build();
             return SourceProvider.of(parallelSource);
         } else {
-            MySqlSource.Builder<RowData> builder =
-                    MySqlSource.<RowData>builder()
+            com.ververica.cdc.connectors.mysql.MySqlSource.Builder<RowData> builder =
+                    com.ververica.cdc.connectors.mysql.MySqlSource.<RowData>builder()
                             .hostname(hostname)
                             .port(port)
                             .databaseList(database)
@@ -146,82 +260,72 @@ public class MySqlTableSource implements ScanTableSource {
                             .startupOptions(startupOptions)
                             .deserializer(deserializer);
             Optional.ofNullable(serverId)
-                    .ifPresent(
-                            serverId -> builder.serverId(MySqlSourceOptions.getServerId(serverId)));
+                    .ifPresent(serverId -> builder.serverId(Integer.parseInt(serverId)));
             DebeziumSourceFunction<RowData> sourceFunction = builder.build();
             return SourceFunctionProvider.of(sourceFunction, false);
         }
     }
 
-    private Configuration getParallelSourceConf() {
-        Map<String, String> properties = new HashMap<>();
-        if (dbzProperties != null) {
-            dbzProperties.forEach((k, v) -> properties.put(k.toString(), v.toString()));
-        }
-        properties.put("database.history", EmbeddedFlinkDatabaseHistory.class.getCanonicalName());
-        properties.put("database.hostname", checkNotNull(hostname));
-        properties.put("database.user", checkNotNull(username));
-        properties.put("database.password", checkNotNull(password));
-        properties.put("database.port", String.valueOf(port));
-        properties.put("database.history.skip.unparseable.ddl", String.valueOf(true));
-        properties.put("database.server.name", DATABASE_SERVER_NAME);
-
-        /**
-         * The server id is required, it will be replaced to 'database.server.id' when build {@link
-         * MySqlSplitReader}
-         */
-        if (serverId != null) {
-            properties.put(SERVER_ID.key(), serverId);
-        }
-        properties.put(SCAN_INCREMENTAL_SNAPSHOT_CHUNK_SIZE.key(), String.valueOf(splitSize));
-        properties.put(SCAN_SNAPSHOT_FETCH_SIZE.key(), String.valueOf(fetchSize));
-        properties.put("connect.timeout.ms", String.valueOf(connectTimeout.toMillis()));
-
-        if (database != null) {
-            properties.put("database.whitelist", database);
-        }
-        if (tableName != null) {
-            properties.put("table.whitelist", database + "." + tableName);
-        }
-        if (serverTimeZone != null) {
-            properties.put("database.serverTimezone", serverTimeZone.toString());
+    protected MetadataConverter[] getMetadataConverters() {
+        if (metadataKeys.isEmpty()) {
+            return new MetadataConverter[0];
         }
 
-        // set mode
-        switch (startupOptions.startupMode) {
-            case INITIAL:
-                properties.put("scan.startup.mode", "initial");
-                break;
+        return metadataKeys.stream()
+                .map(
+                        key ->
+                                Stream.of(MySqlReadableMetadata.values())
+                                        .filter(m -> m.getKey().equals(key))
+                                        .findFirst()
+                                        .orElseThrow(IllegalStateException::new))
+                .map(MySqlReadableMetadata::getConverter)
+                .toArray(MetadataConverter[]::new);
+    }
 
-            case LATEST_OFFSET:
-                properties.put("scan.startup.mode", "latest-offset");
-                break;
+    @Override
+    public Map<String, DataType> listReadableMetadata() {
+        return Stream.of(MySqlReadableMetadata.values())
+                .collect(
+                        Collectors.toMap(
+                                MySqlReadableMetadata::getKey, MySqlReadableMetadata::getDataType));
+    }
 
-            default:
-                throw new UnsupportedOperationException();
-        }
-
-        return Configuration.fromMap(properties);
+    @Override
+    public void applyReadableMetadata(List<String> metadataKeys, DataType producedDataType) {
+        this.metadataKeys = metadataKeys;
+        this.producedDataType = producedDataType;
     }
 
     @Override
     public DynamicTableSource copy() {
-        return new MySqlTableSource(
-                physicalSchema,
-                port,
-                hostname,
-                database,
-                tableName,
-                username,
-                password,
-                serverTimeZone,
-                dbzProperties,
-                serverId,
-                enableParallelRead,
-                splitSize,
-                fetchSize,
-                connectTimeout,
-                startupOptions);
+        MySqlTableSource source =
+                new MySqlTableSource(
+                        physicalSchema,
+                        port,
+                        hostname,
+                        database,
+                        tableName,
+                        username,
+                        password,
+                        serverTimeZone,
+                        dbzProperties,
+                        serverId,
+                        enableParallelRead,
+                        splitSize,
+                        splitMetaGroupSize,
+                        fetchSize,
+                        connectTimeout,
+                        connectMaxRetries,
+                        connectionPoolSize,
+                        distributionFactorUpper,
+                        distributionFactorLower,
+                        startupOptions,
+                        scanNewlyAddedTableEnabled,
+                        jdbcProperties,
+                        heartbeatInterval);
+        source.metadataKeys = metadataKeys;
+        source.producedDataType = producedDataType;
+        return source;
     }
 
     @Override
@@ -236,7 +340,11 @@ public class MySqlTableSource implements ScanTableSource {
         return port == that.port
                 && enableParallelRead == that.enableParallelRead
                 && splitSize == that.splitSize
+                && splitMetaGroupSize == that.splitMetaGroupSize
                 && fetchSize == that.fetchSize
+                && distributionFactorUpper == that.distributionFactorUpper
+                && distributionFactorLower == that.distributionFactorLower
+                && scanNewlyAddedTableEnabled == that.scanNewlyAddedTableEnabled
                 && Objects.equals(physicalSchema, that.physicalSchema)
                 && Objects.equals(hostname, that.hostname)
                 && Objects.equals(database, that.database)
@@ -247,7 +355,12 @@ public class MySqlTableSource implements ScanTableSource {
                 && Objects.equals(serverTimeZone, that.serverTimeZone)
                 && Objects.equals(dbzProperties, that.dbzProperties)
                 && Objects.equals(connectTimeout, that.connectTimeout)
-                && Objects.equals(startupOptions, that.startupOptions);
+                && Objects.equals(connectMaxRetries, that.connectMaxRetries)
+                && Objects.equals(connectionPoolSize, that.connectionPoolSize)
+                && Objects.equals(startupOptions, that.startupOptions)
+                && Objects.equals(producedDataType, that.producedDataType)
+                && Objects.equals(metadataKeys, that.metadataKeys)
+                && Objects.equals(jdbcProperties, that.jdbcProperties);
     }
 
     @Override
@@ -265,9 +378,18 @@ public class MySqlTableSource implements ScanTableSource {
                 dbzProperties,
                 enableParallelRead,
                 splitSize,
+                splitMetaGroupSize,
                 fetchSize,
                 connectTimeout,
-                startupOptions);
+                connectMaxRetries,
+                connectionPoolSize,
+                distributionFactorUpper,
+                distributionFactorLower,
+                startupOptions,
+                producedDataType,
+                metadataKeys,
+                scanNewlyAddedTableEnabled,
+                jdbcProperties);
     }
 
     @Override

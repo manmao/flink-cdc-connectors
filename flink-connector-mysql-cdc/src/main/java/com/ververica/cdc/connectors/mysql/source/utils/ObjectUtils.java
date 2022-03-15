@@ -24,7 +24,10 @@ import java.math.BigInteger;
 /** Utilities for operation on {@link Object}. */
 public class ObjectUtils {
 
-    /** Returns a number {@code Object} whose value is {@code (number + augend)}. */
+    /**
+     * Returns a number {@code Object} whose value is {@code (number + augend)}, Note: This method
+     * does not consider number overflow because we don't want to change the object type.
+     */
     public static Object plus(Object number, int augend) {
         if (number instanceof Integer) {
             return (int) number + augend;
@@ -42,6 +45,33 @@ public class ObjectUtils {
         }
     }
 
+    /** Returns the difference {@code BigDecimal} whose value is {@code (minuend - subtrahend)}. */
+    public static BigDecimal minus(Object minuend, Object subtrahend) {
+        if (!minuend.getClass().equals(subtrahend.getClass())) {
+            throw new IllegalStateException(
+                    String.format(
+                            "Unsupported operand type, the minuend type %s is different with subtrahend type %s.",
+                            minuend.getClass().getSimpleName(),
+                            subtrahend.getClass().getSimpleName()));
+        }
+        if (minuend instanceof Integer) {
+            return BigDecimal.valueOf((int) minuend).subtract(BigDecimal.valueOf((int) subtrahend));
+        } else if (minuend instanceof Long) {
+            return BigDecimal.valueOf((long) minuend)
+                    .subtract(BigDecimal.valueOf((long) subtrahend));
+        } else if (minuend instanceof BigInteger) {
+            return new BigDecimal(
+                    ((BigInteger) minuend).subtract((BigInteger) subtrahend).toString());
+        } else if (minuend instanceof BigDecimal) {
+            return ((BigDecimal) minuend).subtract((BigDecimal) subtrahend);
+        } else {
+            throw new UnsupportedOperationException(
+                    String.format(
+                            "Unsupported type %s for numeric minus.",
+                            minuend.getClass().getSimpleName()));
+        }
+    }
+
     /**
      * Compares two comparable objects.
      *
@@ -53,8 +83,22 @@ public class ObjectUtils {
      */
     @SuppressWarnings("unchecked")
     public static int compare(Object obj1, Object obj2) {
-        Comparable<Object> c1 = (Comparable<Object>) obj1;
-        Comparable<Object> c2 = (Comparable<Object>) obj2;
-        return c1.compareTo(c2);
+        if (obj1 instanceof Comparable && obj1.getClass().equals(obj2.getClass())) {
+            return ((Comparable) obj1).compareTo(obj2);
+        } else {
+            return obj1.toString().compareTo(obj2.toString());
+        }
+    }
+
+    /**
+     * Compares two Double numeric object.
+     *
+     * @return -1, 0, or 1 as this {@code arg1} is numerically less than, equal to, or greater than
+     *     {@code arg2}.
+     */
+    public static int doubleCompare(double arg1, double arg2) {
+        BigDecimal bigDecimal1 = BigDecimal.valueOf(arg1);
+        BigDecimal bigDecimal2 = BigDecimal.valueOf(arg2);
+        return bigDecimal1.compareTo(bigDecimal2);
     }
 }

@@ -18,15 +18,23 @@
 
 package com.ververica.cdc.connectors.mysql.source.utils;
 
+import org.apache.flink.util.FlinkRuntimeException;
+
+import com.ververica.cdc.connectors.mysql.schema.MySqlSchema;
+import com.ververica.cdc.connectors.mysql.source.config.MySqlSourceConfig;
 import io.debezium.connector.mysql.MySqlConnection;
+import io.debezium.jdbc.JdbcConnection;
 import io.debezium.relational.RelationalTableFilters;
 import io.debezium.relational.TableId;
+import io.debezium.relational.history.TableChanges;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 
 import java.sql.SQLException;
 import java.util.ArrayList;
+import java.util.HashMap;
 import java.util.List;
+import java.util.Map;
 
 import static com.ververica.cdc.connectors.mysql.source.utils.StatementUtils.quote;
 
@@ -34,8 +42,8 @@ import static com.ververica.cdc.connectors.mysql.source.utils.StatementUtils.quo
 public class TableDiscoveryUtils {
     private static final Logger LOG = LoggerFactory.getLogger(TableDiscoveryUtils.class);
 
-    public static List<TableId> listTables(
-            MySqlConnection jdbc, RelationalTableFilters tableFilters) throws SQLException {
+    public static List<TableId> listTables(JdbcConnection jdbc, RelationalTableFilters tableFilters)
+            throws SQLException {
         final List<TableId> capturedTableIds = new ArrayList<>();
         // -------------------
         // READ DATABASE NAMES
@@ -85,5 +93,30 @@ public class TableDiscoveryUtils {
             }
         }
         return capturedTableIds;
+    }
+
+    public static Map<TableId, TableChanges.TableChange> discoverCapturedTableSchemas(
+            MySqlSourceConfig sourceConfig, MySqlConnection jdbc) {
+        final List<TableId> capturedTableIds;
+        try {
+            capturedTableIds = listTables(jdbc, sourceConfig.getTableFilters());
+        } catch (SQLException e) {
+            throw new FlinkRuntimeException("Failed to discover captured tables", e);
+        }
+        if (capturedTableIds.isEmpty()) {
+            throw new IllegalArgumentException(
+                    String.format(
+                            "Can't find any matched tables, please check your configured database-name: %s and table-name: %s",
+                            sourceConfig.getDatabaseList(), sourceConfig.getTableList()));
+        }
+
+        // fetch table schemas
+        MySqlSchema mySqlSchema = new MySqlSchema(sourceConfig, jdbc.isTableIdCaseSensitive());
+        Map<TableId, TableChanges.TableChange> tableSchemas = new HashMap<>();
+        for (TableId tableId : capturedTableIds) {
+            TableChanges.TableChange tableSchema = mySqlSchema.getTableSchema(jdbc, tableId);
+            tableSchemas.put(tableId, tableSchema);
+        }
+        return tableSchemas;
     }
 }

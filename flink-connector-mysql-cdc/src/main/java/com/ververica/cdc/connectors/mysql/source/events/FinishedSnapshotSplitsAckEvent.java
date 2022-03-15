@@ -46,6 +46,6 @@ public class FinishedSnapshotSplitsAckEvent implements SourceEvent {
 
     @Override
     public String toString() {
-        return "EnumeratorAckEvent{" + "finishedSplits=" + finishedSplits + '}';
+        return "FinishedSnapshotSplitsAckEvent{" + "finishedSplits=" + finishedSplits + '}';
     }
 }

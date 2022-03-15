@@ -18,19 +18,22 @@
 
 package com.ververica.cdc.connectors.mysql;
 
-import org.apache.flink.configuration.Configuration;
 import org.apache.flink.table.api.TableException;
 import org.apache.flink.table.api.ValidationException;
-
-import org.apache.flink.shaded.guava18.com.google.common.collect.Maps;
+import org.apache.flink.util.FlinkRuntimeException;
 
 import com.ververica.cdc.connectors.mysql.debezium.DebeziumUtils;
+import com.ververica.cdc.connectors.mysql.source.config.MySqlSourceConfig;
 import com.ververica.cdc.debezium.Validator;
-import io.debezium.connector.mysql.MySqlConnection;
+import io.debezium.jdbc.JdbcConnection;
+import org.slf4j.Logger;
+import org.slf4j.LoggerFactory;
 
 import java.sql.SQLException;
 import java.util.Arrays;
 import java.util.Properties;
+
+import static io.debezium.config.Configuration.from;
 
 /**
  * The validator for MySql: it only cares about the version of the database is larger than or equal
@@ -38,34 +41,54 @@ import java.util.Properties;
  */
 public class MySqlValidator implements Validator {
 
+    private static final Logger LOG = LoggerFactory.getLogger(MySqlValidator.class);
     private static final long serialVersionUID = 1L;
 
     private static final String BINLOG_FORMAT_ROW = "ROW";
     private static final String BINLOG_FORMAT_IMAGE_FULL = "FULL";
 
-    private final Configuration configuration;
+    private final Properties dbzProperties;
+    private final MySqlSourceConfig sourceConfig;
 
-    public MySqlValidator(Properties properties) {
-        this(Configuration.fromMap(Maps.fromProperties(properties)));
+    public MySqlValidator(Properties dbzProperties) {
+        this.dbzProperties = dbzProperties;
+        this.sourceConfig = null;
     }
 
-    public MySqlValidator(Configuration configuration) {
-        this.configuration = configuration;
+    public MySqlValidator(MySqlSourceConfig sourceConfig) {
+        this.dbzProperties = sourceConfig.getDbzProperties();
+        this.sourceConfig = sourceConfig;
     }
 
     @Override
     public void validate() {
-        try (MySqlConnection connection = DebeziumUtils.openMySqlConnection(configuration)) {
+        JdbcConnection connection = null;
+        try {
+            if (sourceConfig != null) {
+                connection = DebeziumUtils.openJdbcConnection(sourceConfig);
+            } else {
+                // for the legacy source
+                connection = DebeziumUtils.createMySqlConnection(from(dbzProperties));
+            }
             checkVersion(connection);
             checkBinlogFormat(connection);
             checkBinlogRowImage(connection);
         } catch (SQLException ex) {
             throw new TableException(
                     "Unexpected error while connecting to MySQL and validating", ex);
+        } finally {
+            if (connection != null) {
+                try {
+                    connection.close();
+                } catch (SQLException e) {
+                    throw new FlinkRuntimeException("Closing connection error", e);
+                }
+            }
         }
+        LOG.info("MySQL validation passed.");
     }
 
-    private void checkVersion(MySqlConnection connection) throws SQLException {
+    private void checkVersion(JdbcConnection connection) throws SQLException {
         String version =
                 connection.queryAndMap("SELECT VERSION()", rs -> rs.next() ? rs.getString(1) : "");
 
@@ -81,19 +104,19 @@ public class MySqlValidator implements Validator {
         } else if (versionNumbers[0] < 5) {
             isSatisfied = false;
         } else {
-            isSatisfied = versionNumbers[1] >= 7;
+            isSatisfied = versionNumbers[1] >= 6;
         }
         if (!isSatisfied) {
             throw new ValidationException(
                     String.format(
                             "Currently Flink MySql CDC connector only supports MySql "
-                                    + "whose version is larger or equal to 5.7, but actual is %s.%s.",
+                                    + "whose version is larger or equal to 5.6, but actual is %s.%s.",
                             versionNumbers[0], versionNumbers[1]));
         }
     }
 
     /** Check whether the binlog format is ROW. */
-    private void checkBinlogFormat(MySqlConnection connection) throws SQLException {
+    private void checkBinlogFormat(JdbcConnection connection) throws SQLException {
         String mode =
                 connection
                         .queryAndMap(
@@ -111,7 +134,7 @@ public class MySqlValidator implements Validator {
     }
 
     /** Check whether the binlog row image is FULL. */
-    private void checkBinlogRowImage(MySqlConnection connection) throws SQLException {
+    private void checkBinlogRowImage(JdbcConnection connection) throws SQLException {
         String rowImage =
                 connection
                         .queryAndMap(

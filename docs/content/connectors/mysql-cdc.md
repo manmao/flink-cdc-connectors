@@ -13,13 +13,16 @@ In order to setup the MySQL CDC connector, the following table provides dependen
 <dependency>
   <groupId>com.ververica</groupId>
   <artifactId>flink-connector-mysql-cdc</artifactId>
-  <version>2.0.0</version>
+  <!-- the dependency is available only for stable releases. -->
+  <version>2.2-SNAPSHOT</version>
 </dependency>
 ```
 
 ### SQL Client JAR
 
-Download [flink-sql-connector-mysql-cdc-2.0.0.jar](https://repo1.maven.org/maven2/com/ververica/flink-sql-connector-mysql-cdc/2.0.0/flink-sql-connector-mysql-cdc-2.0.0.jar) and put it under `<FLINK_HOME>/lib/`.
+```Download link is available only for stable releases.```
+
+Download [flink-sql-connector-mysql-cdc-2.2-SNAPSHOT.jar](https://repo1.maven.org/maven2/com/ververica/flink-sql-connector-mysql-cdc/2.2-SNAPSHOT/flink-sql-connector-mysql-cdc-2.2-SNAPSHOT.jar) and put it under `<FLINK_HOME>/lib/`.
 
 Setup MySQL server
 ----------------
@@ -45,7 +48,7 @@ mysql> GRANT SELECT, SHOW DATABASES, REPLICATION SLAVE, REPLICATION CLIENT ON *.
 mysql> FLUSH PRIVILEGES;
 ```
 
-See more about the [permission explanation](https://debezium.io/documentation/reference/1.2/connectors/mysql.html#_permissions_explained).
+See more about the [permission explanation](https://debezium.io/documentation/reference/1.5/connectors/mysql.html#mysql-creating-user).
 
 
 Notes
@@ -71,25 +74,29 @@ How to create a MySQL CDC table
 The MySQL CDC table can be defined as following:
 
 ```sql
--- register a MySQL table 'orders' in Flink SQL
-CREATE TABLE orders (
-  order_id INT,
-  order_date TIMESTAMP(0),
-  customer_name STRING,
-  price DECIMAL(10, 5),
-  product_id INT,
-  order_status BOOLEAN
-) WITH (
-  'connector' = 'mysql-cdc',
-  'hostname' = 'localhost',
-  'port' = '3306',
-  'username' = 'root',
-  'password' = '123456',
-  'database-name' = 'mydb',
-  'table-name' = 'orders');
+-- checkpoint every 3000 milliseconds                       
+Flink SQL> SET 'execution.checkpointing.interval' = '3s';   
 
+-- register a MySQL table 'orders' in Flink SQL
+Flink SQL> CREATE TABLE orders (
+     order_id INT,
+     order_date TIMESTAMP(0),
+     customer_name STRING,
+     price DECIMAL(10, 5),
+     product_id INT,
+     order_status BOOLEAN,
+     PRIMARY KEY(order_id) NOT ENFORCED
+     ) WITH (
+     'connector' = 'mysql-cdc',
+     'hostname' = 'localhost',
+     'port' = '3306',
+     'username' = 'root',
+     'password' = '123456',
+     'database-name' = 'mydb',
+     'table-name' = 'orders');
+  
 -- read snapshot and binlogs from orders table
-SELECT * FROM orders;
+Flink SQL> SELECT * FROM orders;
 ```
 
 Connector Options
@@ -213,7 +220,7 @@ Connector Options
       <td>String</td>
       <td>The session time zone in database server, e.g. "Asia/Shanghai". 
           It controls how the TIMESTAMP type in MYSQL converted to STRING.
-          See more <a href="https://debezium.io/documentation/reference/1.2/connectors/mysql.html#_temporal_values">here</a>.</td>
+          See more <a href="https://debezium.io/documentation/reference/1.5/connectors/mysql.html#mysql-temporal-types">here</a>.</td>
     </tr>
     <tr>
       <td>debezium.min.row.
@@ -231,18 +238,102 @@ During a snapshot operation, the connector will query each included table to pro
           <td>Duration</td>
           <td>The maximum time that the connector should wait after trying to connect to the MySQL database server before timing out.</td>
     </tr>    
-   <tr>
+    <tr>
+          <td>connect.max-retries</td>
+          <td>optional</td>
+          <td style="word-wrap: break-word;">3</td>
+          <td>Integer</td>
+          <td>The max retry times that the connector should retry to build MySQL database server connection.</td>
+    </tr>
+    <tr>
+          <td>connection.pool.size</td>
+          <td>optional</td>
+          <td style="word-wrap: break-word;">20</td>
+          <td>Integer</td>
+          <td>The connection pool size.</td>
+    </tr>
+    <tr>
+          <td>jdbc.properties.*</td>
+          <td>optional</td>
+          <td style="word-wrap: break-word;">20</td>
+          <td>String</td>
+          <td>Option to pass custom JDBC URL properties. User can pass custom properties like 'jdbc.properties.useSSL' = 'false'.</td>
+    </tr>
+    <tr>
+          <td>heartbeat.interval</td>
+          <td>optional</td>
+          <td style="word-wrap: break-word;">30s</td>
+          <td>Duration</td>
+          <td>The interval of sending heartbeat event for tracing the latest available binlog offsets.</td>
+    </tr>
+    <tr>
       <td>debezium.*</td>
       <td>optional</td>
       <td style="word-wrap: break-word;">(none)</td>
       <td>String</td>
       <td>Pass-through Debezium's properties to Debezium Embedded Engine which is used to capture data changes from MySQL server.
           For example: <code>'debezium.snapshot.mode' = 'never'</code>.
-          See more about the <a href="https://debezium.io/documentation/reference/1.2/connectors/mysql.html#mysql-connector-configuration-properties_debezium">Debezium's MySQL Connector properties</a></td> 
+          See more about the <a href="https://debezium.io/documentation/reference/1.5/connectors/mysql.html#mysql-connector-properties">Debezium's MySQL Connector properties</a></td> 
     </tr>
     </tbody>
 </table>
 </div>
+
+Available Metadata
+----------------
+
+The following format metadata can be exposed as read-only (VIRTUAL) columns in a table definition.
+
+<table class="colwidths-auto docutils">
+  <thead>
+     <tr>
+       <th class="text-left" style="width: 15%">Key</th>
+       <th class="text-left" style="width: 30%">DataType</th>
+       <th class="text-left" style="width: 55%">Description</th>
+     </tr>
+  </thead>
+  <tbody>
+    <tr>
+      <td>table_name</td>
+      <td>STRING NOT NULL</td>
+      <td>Name of the table that contain the row.</td>
+    </tr>
+    <tr>
+      <td>database_name</td>
+      <td>STRING NOT NULL</td>
+      <td>Name of the database that contain the row.</td>
+    </tr>
+    <tr>
+      <td>op_ts</td>
+      <td>TIMESTAMP_LTZ(3) NOT NULL</td>
+      <td>It indicates the time that the change was made in the database. <br>If the record is read from snapshot of the table instead of the binlog, the value is always 0.</td>
+    </tr>
+  </tbody>
+</table>
+
+The extended CREATE TABLE example demonstrates the syntax for exposing these metadata fields:
+```sql
+CREATE TABLE products (
+    db_name STRING METADATA FROM 'database_name' VIRTUAL,
+    table_name STRING METADATA  FROM 'table_name' VIRTUAL,
+    operation_ts TIMESTAMP_LTZ(3) METADATA FROM 'op_ts' VIRTUAL,
+    order_id INT,
+    order_date TIMESTAMP(0),
+    customer_name STRING,
+    price DECIMAL(10, 5),
+    product_id INT,
+    order_status BOOLEAN,
+    PRIMARY KEY(order_id) NOT ENFORCED
+) WITH (
+    'connector' = 'mysql-cdc',
+    'hostname' = 'localhost',
+    'port' = '3306',
+    'username' = 'root',
+    'password' = '123456',
+    'database-name' = 'mydb',
+    'table-name' = 'orders'
+);
+```
 
 Features
 --------
@@ -276,6 +367,32 @@ Incremental snapshot reading provides the ability to perform checkpoint in chunk
 #### Lock-free
 
 The MySQL CDC source use **incremental snapshot algorithm**, which avoid acquiring global read lock (FLUSH TABLES WITH READ LOCK) and thus doesn't need `RELOAD` permission.
+
+#### MySQL High Availability Support
+
+The ```mysql-cdc``` connector offers high availability of MySQL high available cluster by using the [GTID](https://dev.mysql.com/doc/refman/5.7/en/replication-gtids-concepts.html) information. To obtain the high availability, the MySQL cluster need enable the GTID mode, the GTID mode in your mysql config file should contain following settings:
+
+```yaml
+gtid_mode = on
+enforce_gtid_consistency = on
+```
+
+If the monitored MySQL server address contains slave instance, you need set following settings to the MySQL conf file. The setting ```log-slave-updates = 1``` enables the slave instance to also write the data that synchronized from master to its binlog, this makes sure that the ```mysql-cdc``` connector can consume entire data from the slave instance.
+
+```yaml
+gtid_mode = on
+enforce_gtid_consistency = on
+log-slave-updates = 1
+```
+
+After the server you monitored fails in MySQL cluster, you only need to change the monitored server address to other available server and then restart the job from the latest checkpoint/savepoint, the job will restore from the checkpoint/savepoint and won't miss any records.
+
+It's recommended to configure a DNS(Domain Name Service) or VIP(Virtual IP Address) for your MySQL cluster, using the DNS or VIP address for ```mysql-cdc``` connector, the DNS or VIP would automatically route the network request to the active MySQL server. In this way, you don't need to modify the address and restart your pipeline anymore.
+
+#### MySQL Heartbeat Event Support
+
+If the table updates infrequently, the binlog file or GTID set may have been cleaned in its last committed binlog position.
+The CDC job may restart fails in this case. So the heartbeat event will help update binlog position. By default heartbeat event is enabled in MySQL CDC source and the interval is set to 30 seconds. You can specify the interval by using table option ```heartbeat.interval```, or set the option to `0s` to disable heartbeat events.
 
 #### How Incremental Snapshot Reading works
 
@@ -356,35 +473,41 @@ _Note: the mechanism of `scan.startup.mode` option relying on Debezium's `snapsh
 
 ### DataStream Source
 
-The Incremental Snapshot Reading feature of MySQL CDC Source only exposes in SQL currently, if you're using DataStream, please use legacy MySQL Source:
-
 ```java
+import org.apache.flink.api.common.eventtime.WatermarkStrategy;
 import org.apache.flink.streaming.api.environment.StreamExecutionEnvironment;
-import org.apache.flink.streaming.api.functions.source.SourceFunction;
-import com.ververica.cdc.debezium.StringDebeziumDeserializationSchema;
-import com.ververica.cdc.connectors.mysql.MySQLSource;
+import com.ververica.cdc.debezium.JsonDebeziumDeserializationSchema;
+import com.ververica.cdc.connectors.mysql.source.MySqlSource;
 
-public class MySqlBinlogSourceExample {
+public class MySqlSourceExample {
   public static void main(String[] args) throws Exception {
-    SourceFunction<String> sourceFunction = MySQLSource.<String>builder()
-      .hostname("localhost")
-      .port(3306)
-      .databaseList("inventory") // monitor all tables under inventory database
-      .username("flinkuser")
-      .password("flinkpw")
-      .deserializer(new StringDebeziumDeserializationSchema()) // converts SourceRecord to String
-      .build();
+    MySqlSource<String> mySqlSource = MySqlSource.<String>builder()
+        .hostname("yourHostname")
+        .port(yourPort)
+        .databaseList("yourDatabaseName") // set captured database
+        .tableList("yourDatabaseName.yourTableName") // set captured table
+        .username("yourUsername")
+        .password("yourPassword")
+        .deserializer(new JsonDebeziumDeserializationSchema()) // converts SourceRecord to JSON String
+        .build();
 
     StreamExecutionEnvironment env = StreamExecutionEnvironment.getExecutionEnvironment();
 
+    // enable checkpoint
+    env.enableCheckpointing(3000);
+
     env
-      .addSource(sourceFunction)
+      .fromSource(mySqlSource, WatermarkStrategy.noWatermarks(), "MySQL Source")
+      // set 4 parallel source tasks
+      .setParallelism(4)
       .print().setParallelism(1); // use parallelism 1 for sink to keep message ordering
 
-    env.execute();
+    env.execute("Print MySQL Snapshot + Binlog");
   }
 }
 ```
+
+**Note:** Please refer [Deserialization](../about.html#deserialization) for more details about the JSON deserialization.
 
 Data Type Mapping
 ----------------
@@ -395,18 +518,21 @@ Data Type Mapping
       <tr>
         <th class="text-left">MySQL type<a href="https://dev.mysql.com/doc/man/8.0/en/data-types.html"></a></th>
         <th class="text-left">Flink SQL type<a href="{% link dev/table/types.md %}"></a></th>
+        <th class="text-left">NOTE</th>
       </tr>
     </thead>
     <tbody>
     <tr>
       <td>TINYINT</td>
       <td>TINYINT</td>
+      <td></td>
     </tr>
     <tr>
       <td>
         SMALLINT<br>
         TINYINT UNSIGNED</td>
       <td>SMALLINT</td>
+      <td></td>
     </tr>
     <tr>
       <td>
@@ -414,90 +540,251 @@ Data Type Mapping
         MEDIUMINT<br>
         SMALLINT UNSIGNED</td>
       <td>INT</td>
+      <td></td>
     </tr>
     <tr>
       <td>
         BIGINT<br>
         INT UNSIGNED</td>
       <td>BIGINT</td>
+      <td></td>
     </tr>
    <tr>
       <td>BIGINT UNSIGNED</td>
       <td>DECIMAL(20, 0)</td>
-    </tr>
-    <tr>
-      <td>BIGINT</td>
-      <td>BIGINT</td>
-    </tr>
-    <tr>
-      <td>FLOAT</td>
-      <td>FLOAT</td>
+      <td></td>
     </tr>
     <tr>
       <td>
-        DOUBLE<br>
-        DOUBLE PRECISION</td>
+        REAL<br>
+        FLOAT<br>
+        </td>
+      <td>FLOAT</td>
+      <td></td>
+    </tr>
+    <tr>
+      <td>
+        DOUBLE
+      </td>
       <td>DOUBLE</td>
+      <td></td>
     </tr>
     <tr>
       <td>
         NUMERIC(p, s)<br>
-         DECIMAL(p, s)</td>
+        DECIMAL(p, s)<br>
+        where p <= 38<br>
+      </td>
       <td>DECIMAL(p, s)</td>
+      <td></td>
+    </tr>
+    <tr>
+      <td>
+        NUMERIC(p, s)<br>
+        DECIMAL(p, s)<br>
+        where 38 < p <= 65<br>
+      </td>
+      <td>STRING</td>
+      <td>The precision for DECIMAL data type is up to 65 in MySQL, but the precision for DECIMAL is limited to 38 in Flink.
+  So if you define a decimal column whose precision is greater than 38, you should map it to STRING to avoid precision loss.</td>
     </tr>
     <tr>
       <td>
         BOOLEAN<br>
-         TINYINT(1)</td>
+        TINYINT(1)<br>
+        BIT(1)
+        </td>
       <td>BOOLEAN</td>
+      <td></td>
     </tr>
     <tr>
       <td>DATE</td>
       <td>DATE</td>
+      <td></td>
     </tr>
     <tr>
       <td>TIME [(p)]</td>
-      <td>TIME [(p)] [WITHOUT TIMEZONE]</td>
+      <td>TIME [(p)]</td>
+      <td></td>
     </tr>
     <tr>
-      <td>DATETIME [(p)]</td>
-      <td>TIMESTAMP [(p)] [WITHOUT TIMEZONE]</td>
-    </tr>
-    <tr>
-      <td>TIMESTAMP [(p)]</td>
       <td>TIMESTAMP [(p)]<br>
-          TIMESTAMP [(p)] WITH LOCAL TIME ZONE
+        DATETIME [(p)]
+      </td>
+      <td>TIMESTAMP [(p)]
+      </td>
+      <td></td>
+    </tr>
+    <tr>
+      <td>
+        CHAR(n)
+      </td>
+      <td>CHAR(n)</td>
+      <td></td>
+    </tr>
+    <tr>
+      <td>
+        VARCHAR(n)
+      </td>
+      <td>VARCHAR(n)</td>
+      <td></td>
+    </tr>
+    <tr>
+      <td>
+        BIT(n)
+      </td>
+      <td>BINARY(⌈n/8⌉)</td>
+      <td></td>
+    </tr>
+    <tr>
+      <td>
+        BINARY(n)
+      </td>
+      <td>BINARY(n)</td>
+      <td></td>
+    </tr>
+    <tr>
+      <td>
+        VARBINARY(N)
+      </td>
+      <td>VARBINARY(N)</td>
+      <td></td>
+    </tr>
+    <tr>
+      <td>
+        TINYTEXT<br>
+        TEXT<br>
+        MEDIUMTEXT<br>
+        LONGTEXT<br>
+      </td>
+      <td>STRING</td>
+      <td></td>
+    </tr>
+    <tr>
+      <td>
+        TINYBLOB<br>
+        BLOB<br>
+        MEDIUMBLOB<br>
+        LONGBLOB<br>
+      </td>
+      <td>BYTES</td>
+      <td>Currently, for BLOB data type in MySQL, only the blob whose length isn't greater than 2,147,483,647(2 ** 31 - 1) is supported. </td>
+    </tr>
+    <tr>
+      <td>
+        YEAR
+      </td>
+      <td>INT</td>
+      <td></td>
+    </tr>
+    <tr>
+      <td>
+        ENUM
+      </td>
+      <td>STRING</td>
+      <td></td>
+    </tr>
+    <tr>
+      <td>
+        JSON
+      </td>
+      <td>STRING</td>
+      <td>The JSON data type  will be converted into STRING with JSON format in Flink.</td>
+    </tr>
+    <tr>
+      <td>
+        SET
+      </td>
+      <td>ARRAY&lt;STRING&gt;</td>
+      <td>As the SET data type in MySQL is a string object that can have zero or more values, 
+          it should always be mapped to an array of string
       </td>
     </tr>
     <tr>
       <td>
-        CHAR(n)<br>
-        VARCHAR(n)<br>
-        TEXT</td>
-      <td>STRING</td>
-    </tr>
-    <tr>
+       GEOMETRY<br>
+       POINT<br>
+       LINESTRING<br>
+       POLYGON<br>
+       MULTIPOINT<br>
+       MULTILINESTRING<br>
+       MULTIPOLYGON<br>
+       GEOMETRYCOLLECTION<br>
+      </td>
       <td>
-        BINARY<br>
-        VARBINARY<br>
-        BLOB</td>
-      <td>BYTES</td>
+        STRING
+      </td>
+      <td>
+      The spatial data types in MySQL will be converted into STRING with a fixed Json format.
+      Please see <a href="#mysql-spatial-data-types-mapping ">MySQL Spatial Data Types Mapping</a> section for more detailed information.
+      </td>
     </tr>
+    </tbody>
+</table>
+</div>
+
+### MySQL Spatial Data Types Mapping
+The spatial data types except for `GEOMETRYCOLLECTION` in MySQL will be converted into Json String with a fixed format like:<br>
+```json
+{"srid": 0 , "type": "xxx", "coordinates": [0, 0]}
+```
+The field `srid` identifies the SRS in which the geometry is defined, SRID 0 is the default for new geometry values if no SRID is specified.
+As only MySQL 8+ support to specific SRID when define spatial data type, the field `srid` will always be 0 in MySQL with a lower version.
+
+The field `type` identifies the spatial data type, such as `POINT`/`LINESTRING`/`POLYGON`.
+
+The field `coordinates` represents the `coordinates` of the spatial data.
+
+For `GEOMETRYCOLLECTION`, it will be converted into Json String with a fixed format like:<br>
+```json
+{"srid": 0 , "type": "GeometryCollection", "geometries": [{"type":"Point","coordinates":[10,10]}]}
+```
+
+The field `geometries` is an array contains all spatial data.
+
+The example for different spatial data types mapping is as follows:
+<div class="wy-table-responsive">
+<table class="colwidths-auto docutils">
+    <thead>
+      <tr>
+        <th class="text-left">Spatial data in MySQL</th>
+        <th class="text-left">Json String converted in Flink</th>
+      </tr>
+    </thead>
+    <tbody>
+      <tr>
+        <td>POINT(1 1)</td>
+        <td>{"coordinates":[1,1],"type":"Point","srid":0}</td>
+      </tr>
+      <tr>
+        <td>LINESTRING(3 0, 3 3, 3 5)</td>
+        <td>{"coordinates":[[3,0],[3,3],[3,5]],"type":"LineString","srid":0}</td>
+      </tr>
+      <tr>
+        <td>POLYGON((1 1, 2 1, 2 2,  1 2, 1 1))</td>
+        <td>{"coordinates":[[[1,1],[2,1],[2,2],[1,2],[1,1]]],"type":"Polygon","srid":0}</td>
+      </tr>
+      <tr>
+        <td>MULTIPOINT((1 1),(2 2))</td>
+        <td>{"coordinates":[[1,1],[2,2]],"type":"MultiPoint","srid":0}</td>
+      </tr>
+      <tr>
+        <td>MultiLineString((1 1,2 2,3 3),(4 4,5 5))</td>
+        <td>{"coordinates":[[[1,1],[2,2],[3,3]],[[4,4],[5,5]]],"type":"MultiLineString","srid":0}</td>
+      </tr>
+      <tr>
+        <td>MULTIPOLYGON(((0 0, 10 0, 10 10, 0 10, 0 0)), ((5 5, 7 5, 7 7, 5 7, 5 5)))</td>
+        <td>{"coordinates":[[[[0,0],[10,0],[10,10],[0,10],[0,0]]],[[[5,5],[7,5],[7,7],[5,7],[5,5]]]],"type":"MultiPolygon","srid":0}</td>
+      </tr>
+      <tr>
+        <td>GEOMETRYCOLLECTION(POINT(10 10), POINT(30 30), LINESTRING(15 15, 20 20))</td>
+        <td>{"geometries":[{"type":"Point","coordinates":[10,10]},{"type":"Point","coordinates":[30,30]},{"type":"LineString","coordinates":[[15,15],[20,20]]}],"type":"GeometryCollection","srid":0}</td>
+      </tr>
     </tbody>
 </table>
 </div>
 
 FAQ
 --------
-
-#### Q1: How to skip snapshot and only read from binlog? 
-
-Please see [Startup Reading Position](#startup-reading-position) section.
-
-#### Q2: How to read a shared database that contains multiple tables, e.g. user_00, user_01, ..., user_99 ?
-
-The `table-name` option supports regular expressions to monitor multiple tables matches the regular expression. So you can set `table-name` to `user_.*` to monitor all the `user_` prefix tables. The same to the `database-name` option. Note that the shared table should be in the same schema.
-
-#### Q3: ConnectException: Received DML '...' for processing, binlog probably contains events generated with statement or mixed based replication format
-
-If there is above exception, please check `binlog_format` is `ROW`, you can check this by running `show variables like '%binlog_format%'` in MySQL client. Please note that even if the `binlog_format` configuration of your database is `ROW`, this configuration can be changed by other sessions, for example, `SET SESSION binlog_format='MIXED'; SET SESSION tx_isolation='REPEATABLE-READ'; COMMIT;`. Please also make sure there are no other session are changing this configuration.
+* [FAQ(English)](https://github.com/ververica/flink-cdc-connectors/wiki/FAQ)
+* [FAQ(中文)](https://github.com/ververica/flink-cdc-connectors/wiki/FAQ(ZH))

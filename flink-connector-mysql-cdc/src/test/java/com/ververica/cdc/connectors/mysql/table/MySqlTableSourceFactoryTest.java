@@ -21,6 +21,7 @@ package com.ververica.cdc.connectors.mysql.table;
 import org.apache.flink.configuration.ConfigOption;
 import org.apache.flink.configuration.Configuration;
 import org.apache.flink.table.api.DataTypes;
+import org.apache.flink.table.api.Schema;
 import org.apache.flink.table.catalog.CatalogTable;
 import org.apache.flink.table.catalog.Column;
 import org.apache.flink.table.catalog.ObjectIdentifier;
@@ -30,7 +31,6 @@ import org.apache.flink.table.catalog.UniqueConstraint;
 import org.apache.flink.table.connector.source.DynamicTableSource;
 import org.apache.flink.table.factories.Factory;
 import org.apache.flink.table.factories.FactoryUtil;
-import org.apache.flink.table.utils.TableSchemaUtils;
 import org.apache.flink.util.ExceptionUtils;
 
 import org.junit.Test;
@@ -39,16 +39,24 @@ import java.time.Duration;
 import java.time.ZoneId;
 import java.util.ArrayList;
 import java.util.Arrays;
+import java.util.Collections;
 import java.util.HashMap;
 import java.util.Map;
 import java.util.Properties;
 
-import static com.ververica.cdc.connectors.mysql.source.MySqlSourceOptions.CONNECT_TIMEOUT;
-import static com.ververica.cdc.connectors.mysql.source.MySqlSourceOptions.SCAN_INCREMENTAL_SNAPSHOT_CHUNK_SIZE;
-import static com.ververica.cdc.connectors.mysql.source.MySqlSourceOptions.SCAN_INCREMENTAL_SNAPSHOT_ENABLED;
-import static com.ververica.cdc.connectors.mysql.source.MySqlSourceOptions.SCAN_SNAPSHOT_FETCH_SIZE;
-import static org.apache.flink.table.api.TableSchema.fromResolvedSchema;
+import static com.ververica.cdc.connectors.mysql.source.config.MySqlSourceOptions.CHUNK_META_GROUP_SIZE;
+import static com.ververica.cdc.connectors.mysql.source.config.MySqlSourceOptions.CONNECTION_POOL_SIZE;
+import static com.ververica.cdc.connectors.mysql.source.config.MySqlSourceOptions.CONNECT_MAX_RETRIES;
+import static com.ververica.cdc.connectors.mysql.source.config.MySqlSourceOptions.CONNECT_TIMEOUT;
+import static com.ververica.cdc.connectors.mysql.source.config.MySqlSourceOptions.HEARTBEAT_INTERVAL;
+import static com.ververica.cdc.connectors.mysql.source.config.MySqlSourceOptions.SCAN_INCREMENTAL_SNAPSHOT_CHUNK_SIZE;
+import static com.ververica.cdc.connectors.mysql.source.config.MySqlSourceOptions.SCAN_INCREMENTAL_SNAPSHOT_ENABLED;
+import static com.ververica.cdc.connectors.mysql.source.config.MySqlSourceOptions.SCAN_SNAPSHOT_FETCH_SIZE;
+import static com.ververica.cdc.connectors.mysql.source.config.MySqlSourceOptions.SPLIT_KEY_EVEN_DISTRIBUTION_FACTOR_LOWER_BOUND;
+import static com.ververica.cdc.connectors.mysql.source.config.MySqlSourceOptions.SPLIT_KEY_EVEN_DISTRIBUTION_FACTOR_UPPER_BOUND;
+import static org.apache.flink.core.testutils.FlinkMatchers.containsMessage;
 import static org.junit.Assert.assertEquals;
+import static org.junit.Assert.assertThat;
 import static org.junit.Assert.assertTrue;
 import static org.junit.Assert.fail;
 
@@ -66,6 +74,18 @@ public class MySqlTableSourceFactoryTest {
                     new ArrayList<>(),
                     UniqueConstraint.primaryKey("pk", Arrays.asList("bbb", "aaa")));
 
+    private static final ResolvedSchema SCHEMA_WITH_METADATA =
+            new ResolvedSchema(
+                    Arrays.asList(
+                            Column.physical("id", DataTypes.BIGINT().notNull()),
+                            Column.physical("name", DataTypes.STRING()),
+                            Column.physical("count", DataTypes.DECIMAL(38, 18)),
+                            Column.metadata("time", DataTypes.TIMESTAMP_LTZ(3), "op_ts", true),
+                            Column.metadata(
+                                    "database_name", DataTypes.STRING(), "database_name", true)),
+                    Collections.emptyList(),
+                    UniqueConstraint.primaryKey("pk", Collections.singletonList("id")));
+
     private static final String MY_LOCALHOST = "localhost";
     private static final String MY_USERNAME = "flinkuser";
     private static final String MY_PASSWORD = "flinkpw";
@@ -81,7 +101,7 @@ public class MySqlTableSourceFactoryTest {
         DynamicTableSource actualSource = createTableSource(properties);
         MySqlTableSource expectedSource =
                 new MySqlTableSource(
-                        TableSchemaUtils.getPhysicalSchema(fromResolvedSchema(SCHEMA)),
+                        SCHEMA,
                         3306,
                         MY_LOCALHOST,
                         MY_DATABASE,
@@ -93,9 +113,17 @@ public class MySqlTableSourceFactoryTest {
                         null,
                         false,
                         SCAN_INCREMENTAL_SNAPSHOT_CHUNK_SIZE.defaultValue(),
+                        CHUNK_META_GROUP_SIZE.defaultValue(),
                         SCAN_SNAPSHOT_FETCH_SIZE.defaultValue(),
                         CONNECT_TIMEOUT.defaultValue(),
-                        StartupOptions.initial());
+                        CONNECT_MAX_RETRIES.defaultValue(),
+                        CONNECTION_POOL_SIZE.defaultValue(),
+                        SPLIT_KEY_EVEN_DISTRIBUTION_FACTOR_UPPER_BOUND.defaultValue(),
+                        SPLIT_KEY_EVEN_DISTRIBUTION_FACTOR_LOWER_BOUND.defaultValue(),
+                        StartupOptions.initial(),
+                        false,
+                        new Properties(),
+                        HEARTBEAT_INTERVAL.defaultValue());
         assertEquals(expectedSource, actualSource);
     }
 
@@ -105,6 +133,9 @@ public class MySqlTableSourceFactoryTest {
         properties.put("scan.incremental.snapshot.enabled", "true");
         properties.put("server-id", "123-126");
         properties.put("scan.incremental.snapshot.chunk.size", "8000");
+        properties.put("chunk-meta.group.size", "3000");
+        properties.put("split-key.even-distribution.factor.upper-bound", "40.5");
+        properties.put("split-key.even-distribution.factor.lower-bound", "0.01");
         properties.put("scan.snapshot.fetch.size", "100");
         properties.put("connect.timeout", "45s");
 
@@ -112,7 +143,7 @@ public class MySqlTableSourceFactoryTest {
         DynamicTableSource actualSource = createTableSource(properties);
         MySqlTableSource expectedSource =
                 new MySqlTableSource(
-                        TableSchemaUtils.getPhysicalSchema(fromResolvedSchema(SCHEMA)),
+                        SCHEMA,
                         3306,
                         MY_LOCALHOST,
                         MY_DATABASE,
@@ -124,9 +155,17 @@ public class MySqlTableSourceFactoryTest {
                         "123-126",
                         true,
                         8000,
+                        3000,
                         100,
                         Duration.ofSeconds(45),
-                        StartupOptions.initial());
+                        CONNECT_MAX_RETRIES.defaultValue(),
+                        CONNECTION_POOL_SIZE.defaultValue(),
+                        40.5d,
+                        0.01d,
+                        StartupOptions.initial(),
+                        false,
+                        new Properties(),
+                        HEARTBEAT_INTERVAL.defaultValue());
         assertEquals(expectedSource, actualSource);
     }
 
@@ -143,7 +182,7 @@ public class MySqlTableSourceFactoryTest {
         DynamicTableSource actualSource = createTableSource(properties);
         MySqlTableSource expectedSource =
                 new MySqlTableSource(
-                        TableSchemaUtils.getPhysicalSchema(fromResolvedSchema(SCHEMA)),
+                        SCHEMA,
                         3306,
                         MY_LOCALHOST,
                         MY_DATABASE,
@@ -155,9 +194,17 @@ public class MySqlTableSourceFactoryTest {
                         "123",
                         true,
                         8000,
+                        CHUNK_META_GROUP_SIZE.defaultValue(),
                         100,
                         Duration.ofSeconds(45),
-                        StartupOptions.initial());
+                        CONNECT_MAX_RETRIES.defaultValue(),
+                        CONNECTION_POOL_SIZE.defaultValue(),
+                        SPLIT_KEY_EVEN_DISTRIBUTION_FACTOR_UPPER_BOUND.defaultValue(),
+                        SPLIT_KEY_EVEN_DISTRIBUTION_FACTOR_LOWER_BOUND.defaultValue(),
+                        StartupOptions.initial(),
+                        false,
+                        new Properties(),
+                        HEARTBEAT_INTERVAL.defaultValue());
         assertEquals(expectedSource, actualSource);
     }
 
@@ -172,7 +219,7 @@ public class MySqlTableSourceFactoryTest {
         DynamicTableSource actualSource = createTableSource(properties);
         MySqlTableSource expectedSource =
                 new MySqlTableSource(
-                        TableSchemaUtils.getPhysicalSchema(fromResolvedSchema(SCHEMA)),
+                        SCHEMA,
                         3306,
                         MY_LOCALHOST,
                         MY_DATABASE,
@@ -184,9 +231,17 @@ public class MySqlTableSourceFactoryTest {
                         "123-126",
                         SCAN_INCREMENTAL_SNAPSHOT_ENABLED.defaultValue(),
                         SCAN_INCREMENTAL_SNAPSHOT_CHUNK_SIZE.defaultValue(),
+                        CHUNK_META_GROUP_SIZE.defaultValue(),
                         SCAN_SNAPSHOT_FETCH_SIZE.defaultValue(),
                         CONNECT_TIMEOUT.defaultValue(),
-                        StartupOptions.latest());
+                        CONNECT_MAX_RETRIES.defaultValue(),
+                        CONNECTION_POOL_SIZE.defaultValue(),
+                        SPLIT_KEY_EVEN_DISTRIBUTION_FACTOR_UPPER_BOUND.defaultValue(),
+                        SPLIT_KEY_EVEN_DISTRIBUTION_FACTOR_LOWER_BOUND.defaultValue(),
+                        StartupOptions.latest(),
+                        false,
+                        new Properties(),
+                        HEARTBEAT_INTERVAL.defaultValue());
         assertEquals(expectedSource, actualSource);
     }
 
@@ -196,14 +251,19 @@ public class MySqlTableSourceFactoryTest {
         options.put("port", "3307");
         options.put("server-id", "4321");
         options.put("server-time-zone", "Asia/Shanghai");
+        options.put("scan.newly-added-table.enabled", "true");
         options.put("debezium.snapshot.mode", "never");
+        options.put("jdbc.properties.useSSL", "false");
+        options.put("heartbeat.interval", "15213ms");
 
         DynamicTableSource actualSource = createTableSource(options);
         Properties dbzProperties = new Properties();
         dbzProperties.put("snapshot.mode", "never");
+        Properties jdbcProperties = new Properties();
+        jdbcProperties.setProperty("useSSL", "false");
         MySqlTableSource expectedSource =
                 new MySqlTableSource(
-                        TableSchemaUtils.getPhysicalSchema(fromResolvedSchema(SCHEMA)),
+                        SCHEMA,
                         3307,
                         MY_LOCALHOST,
                         MY_DATABASE,
@@ -215,9 +275,17 @@ public class MySqlTableSourceFactoryTest {
                         "4321",
                         false,
                         SCAN_INCREMENTAL_SNAPSHOT_CHUNK_SIZE.defaultValue(),
+                        CHUNK_META_GROUP_SIZE.defaultValue(),
                         SCAN_SNAPSHOT_FETCH_SIZE.defaultValue(),
                         CONNECT_TIMEOUT.defaultValue(),
-                        StartupOptions.initial());
+                        CONNECT_MAX_RETRIES.defaultValue(),
+                        CONNECTION_POOL_SIZE.defaultValue(),
+                        SPLIT_KEY_EVEN_DISTRIBUTION_FACTOR_UPPER_BOUND.defaultValue(),
+                        SPLIT_KEY_EVEN_DISTRIBUTION_FACTOR_LOWER_BOUND.defaultValue(),
+                        StartupOptions.initial(),
+                        true,
+                        jdbcProperties,
+                        Duration.ofMillis(15213));
         assertEquals(expectedSource, actualSource);
     }
 
@@ -254,7 +322,7 @@ public class MySqlTableSourceFactoryTest {
         DynamicTableSource actualSource = createTableSource(properties);
         MySqlTableSource expectedSource =
                 new MySqlTableSource(
-                        TableSchemaUtils.getPhysicalSchema(fromResolvedSchema(SCHEMA)),
+                        SCHEMA,
                         3306,
                         MY_LOCALHOST,
                         MY_DATABASE,
@@ -266,9 +334,17 @@ public class MySqlTableSourceFactoryTest {
                         null,
                         false,
                         SCAN_INCREMENTAL_SNAPSHOT_CHUNK_SIZE.defaultValue(),
+                        CHUNK_META_GROUP_SIZE.defaultValue(),
                         SCAN_SNAPSHOT_FETCH_SIZE.defaultValue(),
                         CONNECT_TIMEOUT.defaultValue(),
-                        StartupOptions.initial());
+                        CONNECT_MAX_RETRIES.defaultValue(),
+                        CONNECTION_POOL_SIZE.defaultValue(),
+                        SPLIT_KEY_EVEN_DISTRIBUTION_FACTOR_UPPER_BOUND.defaultValue(),
+                        SPLIT_KEY_EVEN_DISTRIBUTION_FACTOR_LOWER_BOUND.defaultValue(),
+                        StartupOptions.initial(),
+                        false,
+                        new Properties(),
+                        HEARTBEAT_INTERVAL.defaultValue());
         assertEquals(expectedSource, actualSource);
     }
 
@@ -314,7 +390,7 @@ public class MySqlTableSourceFactoryTest {
         DynamicTableSource actualSource = createTableSource(properties);
         MySqlTableSource expectedSource =
                 new MySqlTableSource(
-                        TableSchemaUtils.getPhysicalSchema(fromResolvedSchema(SCHEMA)),
+                        SCHEMA,
                         3306,
                         MY_LOCALHOST,
                         MY_DATABASE,
@@ -326,9 +402,60 @@ public class MySqlTableSourceFactoryTest {
                         null,
                         false,
                         SCAN_INCREMENTAL_SNAPSHOT_CHUNK_SIZE.defaultValue(),
+                        CHUNK_META_GROUP_SIZE.defaultValue(),
                         SCAN_SNAPSHOT_FETCH_SIZE.defaultValue(),
                         CONNECT_TIMEOUT.defaultValue(),
-                        StartupOptions.latest());
+                        CONNECT_MAX_RETRIES.defaultValue(),
+                        CONNECTION_POOL_SIZE.defaultValue(),
+                        SPLIT_KEY_EVEN_DISTRIBUTION_FACTOR_UPPER_BOUND.defaultValue(),
+                        SPLIT_KEY_EVEN_DISTRIBUTION_FACTOR_LOWER_BOUND.defaultValue(),
+                        StartupOptions.latest(),
+                        false,
+                        new Properties(),
+                        HEARTBEAT_INTERVAL.defaultValue());
+        assertEquals(expectedSource, actualSource);
+    }
+
+    @Test
+    public void testMetadataColumns() {
+        Map<String, String> properties = getAllOptions();
+
+        // validation for source
+        DynamicTableSource actualSource = createTableSource(SCHEMA_WITH_METADATA, properties);
+        MySqlTableSource mySqlSource = (MySqlTableSource) actualSource;
+        mySqlSource.applyReadableMetadata(
+                Arrays.asList("op_ts", "database_name"),
+                SCHEMA_WITH_METADATA.toSourceRowDataType());
+        actualSource = mySqlSource.copy();
+
+        MySqlTableSource expectedSource =
+                new MySqlTableSource(
+                        SCHEMA_WITH_METADATA,
+                        3306,
+                        MY_LOCALHOST,
+                        MY_DATABASE,
+                        MY_TABLE,
+                        MY_USERNAME,
+                        MY_PASSWORD,
+                        ZoneId.of("UTC"),
+                        PROPERTIES,
+                        null,
+                        false,
+                        SCAN_INCREMENTAL_SNAPSHOT_CHUNK_SIZE.defaultValue(),
+                        CHUNK_META_GROUP_SIZE.defaultValue(),
+                        SCAN_SNAPSHOT_FETCH_SIZE.defaultValue(),
+                        CONNECT_TIMEOUT.defaultValue(),
+                        CONNECT_MAX_RETRIES.defaultValue(),
+                        CONNECTION_POOL_SIZE.defaultValue(),
+                        SPLIT_KEY_EVEN_DISTRIBUTION_FACTOR_UPPER_BOUND.defaultValue(),
+                        SPLIT_KEY_EVEN_DISTRIBUTION_FACTOR_LOWER_BOUND.defaultValue(),
+                        StartupOptions.initial(),
+                        false,
+                        new Properties(),
+                        HEARTBEAT_INTERVAL.defaultValue());
+        expectedSource.producedDataType = SCHEMA_WITH_METADATA.toSourceRowDataType();
+        expectedSource.metadataKeys = Arrays.asList("op_ts", "database_name");
+
         assertEquals(expectedSource, actualSource);
     }
 
@@ -358,9 +485,102 @@ public class MySqlTableSourceFactoryTest {
         } catch (Throwable t) {
             assertTrue(
                     ExceptionUtils.findThrowableWithMessage(
-                                    t,
-                                    "The 'server-id' should contains single numeric ID like '5400' or numeric ID range '5400-5404', but actual is 123b")
+                                    t, "The value of option 'server-id' is invalid: '123b'")
                             .isPresent());
+            assertTrue(
+                    ExceptionUtils.findThrowableWithMessage(
+                                    t, "The server id 123b is not a valid numeric.")
+                            .isPresent());
+        }
+
+        // validate illegal split size
+        try {
+            Map<String, String> properties = getAllOptions();
+            properties.put("scan.incremental.snapshot.enabled", "true");
+            properties.put("scan.incremental.snapshot.chunk.size", "1");
+
+            createTableSource(properties);
+            fail("exception expected");
+        } catch (Throwable t) {
+            assertThat(
+                    t,
+                    containsMessage(
+                            "The value of option 'scan.incremental.snapshot.chunk.size' must larger than 1, but is 1"));
+        }
+
+        // validate illegal fetch size
+        try {
+            Map<String, String> properties = getAllOptions();
+            properties.put("scan.incremental.snapshot.enabled", "true");
+            properties.put("scan.snapshot.fetch.size", "1");
+
+            createTableSource(properties);
+            fail("exception expected");
+        } catch (Throwable t) {
+            assertThat(
+                    t,
+                    containsMessage(
+                            "The value of option 'scan.snapshot.fetch.size' must larger than 1, but is 1"));
+        }
+
+        // validate illegal split meta group size
+        try {
+            Map<String, String> properties = getAllOptions();
+            properties.put("scan.incremental.snapshot.enabled", "true");
+            properties.put("chunk-meta.group.size", "1");
+
+            createTableSource(properties);
+            fail("exception expected");
+        } catch (Throwable t) {
+            assertThat(
+                    t,
+                    containsMessage(
+                            "The value of option 'chunk-meta.group.size' must larger than 1, but is 1"));
+        }
+
+        // validate illegal split meta group size
+        try {
+            Map<String, String> properties = getAllOptions();
+            properties.put("scan.incremental.snapshot.enabled", "true");
+            properties.put("split-key.even-distribution.factor.upper-bound", "0.8");
+
+            createTableSource(properties);
+            fail("exception expected");
+        } catch (Throwable t) {
+            assertThat(
+                    t,
+                    containsMessage(
+                            "The value of option 'split-key.even-distribution.factor.upper-bound' must larger than or equals 1.0, but is 0.8"));
+        }
+
+        // validate illegal connection pool size
+        try {
+            Map<String, String> properties = getAllOptions();
+            properties.put("scan.incremental.snapshot.enabled", "true");
+            properties.put("connection.pool.size", "1");
+
+            createTableSource(properties);
+            fail("exception expected");
+        } catch (Throwable t) {
+            assertThat(
+                    t,
+                    containsMessage(
+                            "The value of option 'connection.pool.size' must larger than 1, but is 1"));
+        }
+
+        // validate illegal connect max retry times
+        try {
+            Map<String, String> properties = getAllOptions();
+            properties.put("scan.incremental.snapshot.enabled", "true");
+            properties.put("connect.max-retries", "0");
+
+            createTableSource(properties);
+            fail("exception expected");
+        } catch (Throwable t) {
+            assertThat(
+                    t,
+                    containsMessage(
+                            "The value of option 'connect.max-retries' must larger than 0, but is 0"));
         }
 
         // validate missing required
@@ -408,6 +628,29 @@ public class MySqlTableSourceFactoryTest {
                             + "but was: abc";
             assertTrue(ExceptionUtils.findThrowableWithMessage(t, msg).isPresent());
         }
+
+        // validate invalid database-name
+        try {
+            Map<String, String> properties = getAllOptions();
+            properties.put("database-name", "*_invalid_db");
+        } catch (Throwable t) {
+            String msg =
+                    String.format(
+                            "The database-name '%s' is not a valid regular expression",
+                            "*_invalid_db");
+            assertTrue(ExceptionUtils.findThrowableWithMessage(t, msg).isPresent());
+        }
+        // validate invalid table-name
+        try {
+            Map<String, String> properties = getAllOptions();
+            properties.put("table-name", "*_invalid_table");
+        } catch (Throwable t) {
+            String msg =
+                    String.format(
+                            "The table-name '%s' is not a valid regular expression",
+                            "*_invalid_table");
+            assertTrue(ExceptionUtils.findThrowableWithMessage(t, msg).isPresent());
+        }
     }
 
     private Map<String, String> getAllOptions() {
@@ -422,19 +665,24 @@ public class MySqlTableSourceFactoryTest {
         return options;
     }
 
-    private static DynamicTableSource createTableSource(Map<String, String> options) {
+    private static DynamicTableSource createTableSource(
+            ResolvedSchema schema, Map<String, String> options) {
         return FactoryUtil.createTableSource(
                 null,
                 ObjectIdentifier.of("default", "default", "t1"),
                 new ResolvedCatalogTable(
                         CatalogTable.of(
-                                fromResolvedSchema(SCHEMA).toSchema(),
+                                Schema.newBuilder().fromResolvedSchema(schema).build(),
                                 "mock source",
                                 new ArrayList<>(),
                                 options),
-                        SCHEMA),
+                        schema),
                 new Configuration(),
                 MySqlTableSourceFactoryTest.class.getClassLoader(),
                 false);
+    }
+
+    private static DynamicTableSource createTableSource(Map<String, String> options) {
+        return createTableSource(SCHEMA, options);
     }
 }
