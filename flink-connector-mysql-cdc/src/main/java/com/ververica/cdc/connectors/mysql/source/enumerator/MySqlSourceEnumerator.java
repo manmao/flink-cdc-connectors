@@ -1,11 +1,9 @@
 /*
- * Licensed to the Apache Software Foundation (ASF) under one
- * or more contributor license agreements.  See the NOTICE file
- * distributed with this work for additional information
- * regarding copyright ownership.  The ASF licenses this file
- * to you under the Apache License, Version 2.0 (the
- * "License"); you may not use this file except in compliance
- * with the License.  You may obtain a copy of the License at
+ * Copyright 2022 Ververica Inc.
+ *
+ * Licensed under the Apache License, Version 2.0 (the "License");
+ * you may not use this file except in compliance with the License.
+ * You may obtain a copy of the License at
  *
  *     http://www.apache.org/licenses/LICENSE-2.0
  *
@@ -24,7 +22,7 @@ import org.apache.flink.api.connector.source.SplitEnumerator;
 import org.apache.flink.api.connector.source.SplitEnumeratorContext;
 import org.apache.flink.util.FlinkRuntimeException;
 
-import org.apache.flink.shaded.guava18.com.google.common.collect.Lists;
+import org.apache.flink.shaded.guava30.com.google.common.collect.Lists;
 
 import com.ververica.cdc.connectors.mysql.source.assigners.MySqlHybridSplitAssigner;
 import com.ververica.cdc.connectors.mysql.source.assigners.MySqlSplitAssigner;
@@ -56,6 +54,7 @@ import java.util.Optional;
 import java.util.TreeSet;
 import java.util.stream.Collectors;
 
+import static com.ververica.cdc.connectors.mysql.source.assigners.AssignerStatus.isAssigning;
 import static com.ververica.cdc.connectors.mysql.source.assigners.AssignerStatus.isAssigningFinished;
 import static com.ververica.cdc.connectors.mysql.source.assigners.AssignerStatus.isSuspended;
 
@@ -85,12 +84,21 @@ public class MySqlSourceEnumerator implements SplitEnumerator<MySqlSplit, Pendin
         this.sourceConfig = sourceConfig;
         this.splitAssigner = splitAssigner;
         this.readersAwaitingSplit = new TreeSet<>();
+
+        // when restored from state, if the split assigner is assigning snapshot
+        // splits or has already assigned all splits, send wakeup event to
+        // SourceReader, SourceReader can omit the event based on its own status.
+        if (isAssigning(splitAssigner.getAssignerStatus())
+                || isAssigningFinished(splitAssigner.getAssignerStatus())) {
+            binlogReaderIsSuspended = true;
+        }
     }
 
     @Override
     public void start() {
         splitAssigner.open();
         suspendBinlogReaderIfNeed();
+        wakeupBinlogReaderIfNeed();
         this.context.callAsync(
                 this::getRegisteredReader,
                 this::syncWithReaders,
@@ -198,6 +206,7 @@ public class MySqlSourceEnumerator implements SplitEnumerator<MySqlSplit, Pendin
                 LOG.info("Assign split {} to subtask {}", mySqlSplit, nextAwaiting);
             } else {
                 // there is no available splits by now, skip assigning
+                wakeupBinlogReaderIfNeed();
                 break;
             }
         }
@@ -276,7 +285,7 @@ public class MySqlSourceEnumerator implements SplitEnumerator<MySqlSplit, Pendin
             context.sendEventToSourceReader(subTask, metadataEvent);
         } else {
             LOG.error(
-                    "Received invalid request meta group id {}, the invalid meta group id range is [0, {}]",
+                    "Received invalid request meta group id {}, the valid meta group id range is [0, {}]",
                     requestMetaGroupId,
                     binlogSplitMeta.size() - 1);
         }

@@ -1,11 +1,9 @@
 /*
- * Licensed to the Apache Software Foundation (ASF) under one
- * or more contributor license agreements.  See the NOTICE file
- * distributed with this work for additional information
- * regarding copyright ownership.  The ASF licenses this file
- * to you under the Apache License, Version 2.0 (the
- * "License"); you may not use this file except in compliance
- * with the License.  You may obtain a copy of the License at
+ * Copyright 2022 Ververica Inc.
+ *
+ * Licensed under the Apache License, Version 2.0 (the "License");
+ * you may not use this file except in compliance with the License.
+ * You may obtain a copy of the License at
  *
  *     http://www.apache.org/licenses/LICENSE-2.0
  *
@@ -69,11 +67,13 @@ public class SqlServerValidator implements Validator {
 
     private void checkVersion(Connection connection) throws SQLException {
         DatabaseMetaData metaData = connection.getMetaData();
-        if (metaData.getDatabaseMajorVersion() != 14 && metaData.getDatabaseMajorVersion() != 15) {
+        // For more information on sqlserver version, please refer to
+        // https://docs.microsoft.com/en-us/troubleshoot/sql/general/determine-version-edition-update-level.
+        if (metaData.getDatabaseMajorVersion() < 11) {
             throw new ValidationException(
                     String.format(
                             "Currently Flink SqlServer CDC connector only supports SqlServer "
-                                    + "whose version is either 14 or 15, but actual is %d.",
+                                    + "whose version is larger or equal to 11, but actual is %d.",
                             metaData.getDatabaseMajorVersion()));
         }
     }

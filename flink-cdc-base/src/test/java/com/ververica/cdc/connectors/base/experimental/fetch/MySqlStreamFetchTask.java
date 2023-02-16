@@ -1,11 +1,9 @@
 /*
- * Licensed to the Apache Software Foundation (ASF) under one
- * or more contributor license agreements.  See the NOTICE file
- * distributed with this work for additional information
- * regarding copyright ownership.  The ASF licenses this file
- * to you under the Apache License, Version 2.0 (the
- * "License"); you may not use this file except in compliance
- * with the License.  You may obtain a copy of the License at
+ * Copyright 2022 Ververica Inc.
+ *
+ * Licensed under the Apache License, Version 2.0 (the "License");
+ * you may not use this file except in compliance with the License.
+ * You may obtain a copy of the License at
  *
  *     http://www.apache.org/licenses/LICENSE-2.0
  *
@@ -23,6 +21,7 @@ import com.ververica.cdc.connectors.base.experimental.offset.BinlogOffset;
 import com.ververica.cdc.connectors.base.relational.JdbcSourceEventDispatcher;
 import com.ververica.cdc.connectors.base.source.meta.split.SourceSplitBase;
 import com.ververica.cdc.connectors.base.source.meta.split.StreamSplit;
+import com.ververica.cdc.connectors.base.source.meta.wartermark.WatermarkKind;
 import com.ververica.cdc.connectors.base.source.reader.external.FetchTask;
 import io.debezium.DebeziumException;
 import io.debezium.connector.mysql.MySqlConnection;
@@ -69,7 +68,8 @@ public class MySqlStreamFetchTask implements FetchTask<SourceSplitBase> {
                         split);
         BinlogSplitChangeEventSourceContext changeEventSourceContext =
                 new BinlogSplitChangeEventSourceContext();
-        binlogSplitReadTask.execute(changeEventSourceContext);
+        binlogSplitReadTask.execute(
+                changeEventSourceContext, sourceFetchContext.getOffsetContext());
     }
 
     @Override
@@ -106,7 +106,6 @@ public class MySqlStreamFetchTask implements FetchTask<SourceSplitBase> {
                 StreamSplit binlogSplit) {
             super(
                     connectorConfig,
-                    offsetContext,
                     connection,
                     dispatcher,
                     errorHandler,
@@ -120,14 +119,15 @@ public class MySqlStreamFetchTask implements FetchTask<SourceSplitBase> {
         }
 
         @Override
-        public void execute(ChangeEventSourceContext context) throws InterruptedException {
+        public void execute(ChangeEventSourceContext context, MySqlOffsetContext offsetContext)
+                throws InterruptedException {
             this.context = context;
-            super.execute(context);
+            super.execute(context, offsetContext);
         }
 
         @Override
-        protected void handleEvent(Event event) {
-            super.handleEvent(event);
+        protected void handleEvent(MySqlOffsetContext offsetContext, Event event) {
+            super.handleEvent(offsetContext, event);
             // check do we need to stop for fetch binlog for snapshot split.
             if (isBoundedRead()) {
                 final BinlogOffset currentBinlogOffset =
@@ -140,7 +140,7 @@ public class MySqlStreamFetchTask implements FetchTask<SourceSplitBase> {
                                 offsetContext.getPartition(),
                                 binlogSplit,
                                 currentBinlogOffset,
-                                JdbcSourceEventDispatcher.WatermarkKind.BINLOG_END);
+                                WatermarkKind.END);
                     } catch (InterruptedException e) {
                         LOG.error("Send signal event error.", e);
                         errorHandler.setProducerThrowable(

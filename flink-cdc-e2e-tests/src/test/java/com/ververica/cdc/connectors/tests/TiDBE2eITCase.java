@@ -1,11 +1,9 @@
 /*
- * Licensed to the Apache Software Foundation (ASF) under one
- * or more contributor license agreements.  See the NOTICE file
- * distributed with this work for additional information
- * regarding copyright ownership.  The ASF licenses this file
- * to you under the Apache License, Version 2.0 (the
- * "License"); you may not use this file except in compliance
- * with the License.  You may obtain a copy of the License at
+ * Copyright 2022 Ververica Inc.
+ *
+ * Licensed under the Apache License, Version 2.0 (the "License");
+ * you may not use this file except in compliance with the License.
+ * You may obtain a copy of the License at
  *
  *     http://www.apache.org/licenses/LICENSE-2.0
  *
@@ -73,7 +71,7 @@ public class TiDBE2eITCase extends FlinkContainerTestEnvironment {
 
     @ClassRule
     public static final GenericContainer<?> PD =
-            new GenericContainer<>("pingcap/pd:v5.3.1")
+            new GenericContainer<>("pingcap/pd:v6.0.0")
                     .withExposedPorts(PD_PORT)
                     .withFileSystemBind("src/test/resources/docker/tidb/pd.toml", "/pd.toml")
                     .withCommand(
@@ -94,7 +92,7 @@ public class TiDBE2eITCase extends FlinkContainerTestEnvironment {
 
     @ClassRule
     public static final GenericContainer<?> TIKV =
-            new GenericContainer<>("pingcap/tikv:v5.3.1")
+            new GenericContainer<>("pingcap/tikv:v6.0.0")
                     .withExposedPorts(TIKV_PORT)
                     .withFileSystemBind("src/test/resources/docker/tidb/tikv.toml", "/tikv.toml")
                     .withCommand(
@@ -112,7 +110,7 @@ public class TiDBE2eITCase extends FlinkContainerTestEnvironment {
 
     @ClassRule
     public static final GenericContainer<?> TIDB =
-            new GenericContainer<>("pingcap/tidb:v5.3.1")
+            new GenericContainer<>("pingcap/tidb:v6.0.0")
                     .withExposedPorts(TIDB_PORT)
                     .withFileSystemBind("src/test/resources/docker/tidb/tidb.toml", "/tidb.toml")
                     .withCommand(
